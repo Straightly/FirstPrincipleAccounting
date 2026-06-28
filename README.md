@@ -17,3 +17,5 @@ Starter layout for a first-principles accounting system with:
   - `src/first_principle_accounting/mcp/` MCP-facing adapter layer
   - `src/first_principle_accounting/cli/` local bootstrap and entry points
   - `tests/` test package placeholder
+
+## This is implementation using Codex.  Will try Gemini and Claude Code too.
