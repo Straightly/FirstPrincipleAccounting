@@ -187,3 +187,149 @@ Just create a new book and add everything to it, including the deployed workflow
   - Gap: The spec defines per-user keys and encrypted exports, but not the book data key, key wrapping, owner transfer, revocation, or restored-book identity.
   - Recommendation: Define a book-level data key wrapped for authorized users, plus stable `book_id` and restore/instance identity rules.
   - Decision:  The book has one key.  It will be loaded into memory before the book is read into the memory.  In the memory, access to account data is limited by authorization, not cryption.  Exporting only export data readable by the user who create the export, and will be encrypted by the user who is going to read the export.  When owner ship is transferred, the book will be re-encrypted by the new owner's key.  There should be no key transfer of any kind.
+
+## Implement the first LedgerZero system.
+
+Implementation rule: complete one milestone, run its tests, stop for review, and only then begin the next milestone. Do not start a later milestone just because the code is nearby.
+
+Spec interpretation used for implementation: sub-book creation copies parent book settings as defaults, but role assignments are not copied. The child owner assigns child-book roles through the child book's own authorization workflow.
+
+- [ ] 1. Create the implementation workspace and quality gates
+  - Dependencies: `Writing/Accounting/LedgerZero_Spec.md` is the source of truth.
+  - Scope: Establish the repository structure for the Rust `AccountingEngine`, runtime backend, frontend app, MCP server, Python dev-time backend, shared contracts, and developer scripts without implementing business behavior.
+  - Acceptance criteria: The logical server boundaries from the spec are visible in folders and package names; each component has a minimal build/test command; generated artifacts and accounting book data have separate folders; no accounting storage credentials are reachable from MCP, frontend, or dev-time backend code.
+  - Tests: Empty/smoke test suites run for Rust, Python, MCP, and frontend packages; a top-level check command runs all available checks.
+  - Review gate: Stop after the skeleton and commands are reviewable.
+
+- [ ] 2. Define shared domain contracts and serialized book state
+  - Dependencies: Milestone 1.
+  - Scope: Define the first implementation data contracts for `AccountingBook`, `Entity`, `Account`, `JournalEntry`, `JournalLine`, ledger events, role/workflow authorization records, price table records, sub-book links, consolidation rules, and workflow deployment references.
+  - Acceptance criteria: The contracts reflect client-generated UUIDs for entries, events, and workflow executions; `book.data.enc` is modeled as the single source of truth after decryption; administrative events and accounting events share one ledger event model; contracts can round-trip through JSON without losing stable ids.
+  - Tests: Contract serialization round-trip tests; required-field validation tests; compatibility fixture for one empty book.
+  - Review gate: Stop before implementing posting logic.
+
+- [ ] 3. Implement the Rust `AccountingEngine` core posting model
+  - Dependencies: Milestone 2.
+  - Scope: Implement in-memory account, period, journal entry, journal line, and ledger event behavior for one book, with same-unit double-entry posting and immutable correction-by-new-entry semantics.
+  - Acceptance criteria: Balanced same-unit entries can be posted; unbalanced entries are rejected; closed periods reject posting; inactive or missing accounts reject posting; posted entries are immutable; repeated client-generated entry/event ids return the existing outcome rather than creating duplicates.
+  - Tests: Rust unit tests for balanced posting, unbalanced rejection, closed-period rejection, inactive-account rejection, duplicate-id idempotency, and correction entries.
+  - Review gate: Stop before adding cross-unit price balancing.
+
+- [ ] 4. Implement price table and multi-resource balancing
+  - Dependencies: Milestone 3.
+  - Scope: Add price table records and transaction-time price validation so entries with different account units balance by `debit_amount == credit_amount * price` using the applicable price at transaction time.
+  - Acceptance criteria: Each line's unit matches its account; cross-unit entries require an applicable transaction-time price; missing or ambiguous prices reject posting; price changes are recorded as ledger transactions/events rather than hidden conversions.
+  - Tests: Rust unit tests for same-unit entries, valid priced cross-unit entries, missing price rejection, stale/incorrect price rejection, and price-change audit events.
+  - Review gate: Stop before adding encrypted storage.
+
+- [ ] 5. Implement file-backed encrypted book storage
+  - Dependencies: Milestones 2-4.
+  - Scope: Implement the storage driver for one book folder containing `book.data.enc`, `book.keystore.json`, and `export/`, with all book state loaded into memory and rewritten atomically after each mutation.
+  - Acceptance criteria: `BookKeyProvider` loads encrypted/wrapped key material from `book.keystore.json`; `Open book` loads the key into backend memory; no plaintext book key is written to disk; file writes use temp-file-plus-rename atomic replacement; corrupt partial writes can be recovered by reverting to the last clean file/git checkpoint.
+  - Tests: Storage round-trip tests, atomic rewrite failure simulation, duplicate-id persistence tests after reload, wrong-key rejection, no-plaintext-key fixture scan.
+  - Review gate: Stop before exposing backend APIs.
+
+- [ ] 6. Implement runtime backend shell, auth boundary, and book lifecycle
+  - Dependencies: Milestone 5.
+  - Scope: Create the runtime backend application server with book routing, Google Login authentication adapter, local test authenticator, session handling, owner-only `open_book`, and in-memory opened-book lifecycle.
+  - Acceptance criteria: Backend is the only runtime authority boundary for durable writes; frontend/MCP/dev-time backend cannot access storage directly; unopened encrypted books reject book operations; owner can open a book; restart clears in-memory key state; authenticated user identity is separate from workflow authorization.
+  - Tests: Backend API tests for unauthenticated rejection, unauthorized rejection, owner-only open-book success, opened-book operation success, restart/reopen behavior, and storage boundary enforcement.
+  - Review gate: Stop before adding book administration APIs.
+
+- [ ] 7. Implement book administration APIs
+  - Dependencies: Milestone 6.
+  - Scope: Add backend APIs for creating books, entities, accounts, periods, roles, workflow authorization assignments, and role-to-user assignments.
+  - Acceptance criteria: New books bootstrap exactly one owner role; roles are collections of workflows; workflow authorization implies only the backend APIs listed for that workflow; all administrative state changes are recorded as immutable ledger events in `book.data.enc`; role assignment changes are idempotent by client-generated event id.
+  - Tests: Backend integration tests for create book, create entity, create account, create period, create role, assign workflow to role, assign role to user, duplicate admin event handling, and unauthorized admin rejection.
+  - Review gate: Stop before adding posting/query APIs.
+
+- [ ] 8. Implement posting and query backend APIs
+  - Dependencies: Milestones 3-7.
+  - Scope: Add `post_entry`, `list_entries`, `get_balance`, `list_accounts`, and audit-log query behavior through the runtime backend.
+  - Acceptance criteria: Every mutation carries `book_id`, `entity_id`, `workflow_id`, `workflow_deployment_id`, client-generated `workflow_execution_id`, authenticated `user_id`, and client-generated entry/event id; backend re-checks workflow authorization and deployment API allow-list; query APIs enforce book/entity scope.
+  - Tests: Backend integration tests for authorized post, unauthorized post, duplicate post retry, invalid workflow context, invalid deployment API call, balance query, entry list filtering, and audit-log retrieval.
+  - Review gate: Stop after one complete backend-only accounting vertical slice is reviewable.
+
+- [ ] 9. Implement workflow artifact store and deployment metadata
+  - Dependencies: Milestones 2, 7, and 8.
+  - Scope: Implement `dev_artifacts/workflows/<workflow_deployment_id>/` with `workflow.json`, `manifest.json`, generated code folders, hashes, and immutable deployment records in the accounting ledger.
+  - Acceptance criteria: Deployed workflow artifacts are stored outside accounting book storage; deployed artifacts are immutable; artifact identity is hash-based; workflow name points to the latest deployment; historical entries keep exact `workflow_deployment_id`; private accounting context is not persisted in dev artifacts.
+  - Tests: Artifact hash tests, immutability tests, deployment event tests, latest-workflow lookup tests, historical deployment reference tests, private-context fixture scan.
+  - Review gate: Stop before serving frontend workflow code.
+
+- [ ] 10. Implement frontend shell and bootstrapped workflow screens
+  - Dependencies: Milestones 6, 8, and 9.
+  - Scope: Create the frontend web app shell, authenticated session handling, owner-only `Open book` screen, and minimal screens for listing workflows and launching workflow-facing REST-style applications.
+  - Acceptance criteria: Frontend never receives raw encryption keys; workflow execution ids are generated client-side; backend treats all submitted data as untrusted; frontend can call backend APIs with authenticated user context and workflow context; frontend can show backend validation errors clearly.
+  - Tests: Frontend unit tests for workflow execution id generation and API payload construction; browser/API smoke test for login/open-book/list-workflows; negative test proving no raw key appears in frontend state or network payload fixtures.
+  - Review gate: Stop before adding MCP or workflow generation.
+
+- [ ] 11. Implement MCP server primitives for existing backend operations
+  - Dependencies: Milestones 6-9.
+  - Scope: Implement the first MCP primitives that wrap authorized backend operations: workflow list/get, book/entity/account/period creation, role assignment, sub-book primitives as stubs or not-yet-implemented responses, consolidation primitives as stubs or not-yet-implemented responses, and `explain_reconciliation_issue` as a placeholder primitive.
+  - Acceptance criteria: MCP never reads or writes book files directly; MCP calls runtime backend APIs for runtime facts; missing primitives return explicit "not implemented yet" responses rather than silently bypassing architecture; primitive names match the spec.
+  - Tests: MCP smoke tests for primitive discovery, successful backend-backed primitive call, unauthorized backend response propagation, and storage-bypass guard test.
+  - Review gate: Stop before adding LLM/dev-time backend behavior.
+
+- [ ] 12. Implement Python dev-time backend and workflow generation adapter
+  - Dependencies: Milestones 9 and 11.
+  - Scope: Create the Python dev-time backend that owns LLM wrapping, prompt/context assembly, generated artifact preparation, and deployment support, starting with deterministic template generation before enabling real LLM calls.
+  - Acceptance criteria: Dev-time backend has no accounting storage credentials; any real accounting context is fetched only through authorized runtime backend APIs and not saved; synthetic/redacted examples are preferred; generated artifacts are inspectable before deployment.
+  - Tests: Python tests for template generation, redaction/no-private-context persistence, manifest generation, backend-context fetch authorization, and failed-generation cleanup.
+  - Review gate: Stop before implementing the "Adding a workflow" end-to-end flow.
+
+- [ ] 13. Implement the `Adding a workflow` end-to-end flow
+  - Dependencies: Milestones 9-12.
+  - Scope: Connect MCP, Python dev-time backend, workflow artifact store, frontend artifact deployment, and backend workflow deployment events for one generated workflow.
+  - Acceptance criteria: An authorized user can request a workflow, inspect generated artifacts, deploy it, assign it to a role, and see it available in the frontend; deployment records include artifact id, manifest hash, code hash, deployment id, deployer, and timestamp; unauthorized users cannot deploy.
+  - Tests: End-to-end test using deterministic generation; deployment hash verification; unauthorized deploy rejection; redeploy creates a new immutable deployment; old deployment remains auditable.
+  - Review gate: Stop before implementing accounting sample workflows.
+
+- [ ] 14. Implement sample workflow: recording startup expense
+  - Dependencies: Milestones 8, 10, and 13.
+  - Scope: Build the startup expense workflow as a frontend workflow application backed by stable backend posting APIs.
+  - Acceptance criteria: Workflow collects expense date, description, amount, resource unit, source account, expense/asset account, and optional source-document metadata; it posts only through backend APIs; successful entries preserve workflow execution id and deployment id; invalid entries are rejected by backend invariants.
+  - Tests: End-to-end workflow test for valid startup expense; unbalanced entry rejection; closed period rejection; duplicate submit retry; source metadata preservation.
+  - Review gate: Stop before implementing the next sample workflow.
+
+- [ ] 15. Implement sample workflow: manual bank account transactions
+  - Dependencies: Milestone 14.
+  - Scope: Build the manual bank transaction workflow for bank activity before automated statement import exists.
+  - Acceptance criteria: Workflow collects bank account, transaction date, amount, direction, description, offset account, and optional reference metadata; it rejects closed-period and inactive-account attempts through backend responses; bank accounts remain ordinary asset accounts.
+  - Tests: End-to-end workflow test for deposit/withdrawal style entries; inactive account rejection; duplicate submit retry; balance update verification.
+  - Review gate: Stop before implementing reconciliation.
+
+- [ ] 16. Implement sample workflow: end-of-period bank reconciliation
+  - Dependencies: Milestone 15.
+  - Scope: Build manual end-of-period reconciliation that compares expected ending balance and outstanding items against account projection without mutating ledger history except for the reconciliation result event.
+  - Acceptance criteria: Workflow records reconciliation result as an administrative ledger event; discrepancies are reported without hidden ledger mutation; corrections are created only through ordinary posting workflows.
+  - Tests: End-to-end reconciliation match test; discrepancy report test; reconciliation result audit event test; no-ledger-mutation-for-discrepancy test.
+  - Review gate: Stop before implementing sub-books.
+
+- [ ] 17. Implement sub-book creation workflow and APIs
+  - Dependencies: Milestones 7, 8, 10, and 13.
+  - Scope: Implement `create_sub_book`, `list_sub_books`, parent/child link events, child book folder creation, child owner setup, and default copied settings.
+  - Acceptance criteria: Child book is a first-class `AccountingBook` with its own storage folder, owner role, encryption key, chart/accounts, and endpoints; parent settings are copied as defaults; role assignments are not copied; parent/sub-book link is recorded in both books; changing child ownership intentionally reduces parent privileges.
+  - Tests: Backend integration tests for child book creation, copied defaults, role assignment exclusion, independent open-book requirement, link events in both books, and unauthorized parent access rejection.
+  - Review gate: Stop before implementing consolidation rules.
+
+- [ ] 18. Implement consolidation rules and consolidation execution
+  - Dependencies: Milestone 17.
+  - Scope: Implement `define_consolidation_rule`, `list_consolidation_rules`, and `run_consolidation` for parent-owned consolidation from child-book activity.
+  - Acceptance criteria: Default consolidation posts only when parent can resolve child accounts; chart mismatches remain pending until a rule maps/summarizes/transforms child activity; consolidation reads child activity only through authorized child APIs or export/input path; rerunning consolidation is idempotent.
+  - Tests: Consolidation success test with matching charts; pending test for missing mapping; summary-account mapping test; unauthorized child read test; duplicate run idempotency test.
+  - Review gate: Stop before implementing export/restore.
+
+- [ ] 19. Implement AccountingBook export and restore
+  - Dependencies: Milestones 5, 8, 9, and 18.
+  - Scope: Implement encrypted export, restore-to-empty-location, restore-over-damaged-location, workflow artifact reference validation, and continued posting after restore.
+  - Acceptance criteria: Export is encrypted for the intended reader; export contains enough book data to continue operation after restore; workflow artifact bodies remain separate; restore preserves logical `book_id` and internal ids; missing workflow artifacts mark affected workflows unavailable; restored books can accept new entries after `Open book`.
+  - Tests: Export/import round-trip; restore-over-existing-book replacement test; wrong-reader/wrong-key rejection; missing-artifact unavailable test; post-after-restore test; balance preservation test.
+  - Review gate: Stop before packaging/deployment work.
+
+- [ ] 20. Implement local deployment, Oracle VM readiness, and operational checks
+  - Dependencies: Milestones 1-19.
+  - Scope: Add developer and operator commands for local on-premise deployment, Oracle Cloud VM deployment readiness, health checks, logs, backup/git checkpoint guidance, and smoke tests across the four logical servers.
+  - Acceptance criteria: One local command can run the routing server with runtime backend, frontend, MCP, and Python dev-time backend logically separated; health endpoints prove component readiness; no component crosses the storage credential boundary; documentation explains how to open a book, run sample workflows, checkpoint to git, export, and restore.
+  - Tests: Full-system smoke test; health-check test; storage-boundary regression test; sample workflow smoke test; export/restore smoke test; restart/reopen test.
+  - Review gate: Stop for full first-implementation review before adding non-v1 features.
