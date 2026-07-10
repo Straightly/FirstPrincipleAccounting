@@ -87,11 +87,15 @@ export default function App() {
       <div style={box}>
         <h1>LedgerZero</h1>
         <p>Sign in to continue.</p>
-        {authConfig.google_configured && (
-          <button style={button} onClick={() => (window.location.href = "/api/auth/google/login")}>
-            Sign in with Google
+        {(authConfig.providers || []).map((p) => (
+          <button
+            key={p.id}
+            style={button}
+            onClick={() => (window.location.href = `/api/auth/${p.id}/login`)}
+          >
+            Sign in with {p.display_name}
           </button>
-        )}
+        ))}
         {authConfig.dev_login_enabled && (
           <form onSubmit={devLogin}>
             <p style={{ color: "#a00" }}>Dev login (local development only):</p>
@@ -107,9 +111,10 @@ export default function App() {
             </button>
           </form>
         )}
-        {!authConfig.google_configured && !authConfig.dev_login_enabled && (
+        {(authConfig.providers || []).length === 0 && !authConfig.dev_login_enabled && (
           <p style={{ color: "#a00" }}>
-            No login method configured. Set [oauth.google] in server.config.toml.
+            No login method configured. Add an [[auth_providers]] block in
+            server.config.toml.
           </p>
         )}
         {message && <p>{message}</p>}

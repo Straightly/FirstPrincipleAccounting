@@ -4,6 +4,7 @@ A first-principles, AI-native accounting platform. Authoritative documents:
 
 - `docs/LedgerZero_Impl_Spec_v1.md` — implementation spec (build from this)
 - `docs/LedgerZero_Impl_Plan_v1.md` — milestone plan
+- `docs/LedgerZero_Theorems.md` — standing architectural guarantees every change must preserve
 - `docs/LedgerZero_Spec.md` — original vision/design document
 
 ## Layout

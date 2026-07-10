@@ -262,7 +262,7 @@ As in the original spec: structural enforcement at query/write boundaries; autho
 
 ### 5.2 Authentication
 
-OAuth2; Google Login first. Short-lived (1h) session tokens with refresh rotation; every API call carries a verified identity claim; failed authorizations logged to a separate operational audit trail; AKA identity merging per 2.9.
+OAuth2/OIDC; Google Login first. Authentication domains are pluggable behind the `IdentityProvider` interface: any OIDC domain (Google, Microsoft, an enterprise IdP) is a pure data record in a **runtime-mutable provider registry** — adding a domain requires no code change and no restart (Theorems T2/T3 in `LedgerZero_Theorems.md`). Short-lived (1h) session tokens with refresh rotation; every API call carries a verified identity claim; failed authorizations logged to a separate operational audit trail; AKA identity merging per 2.9, with a user-initiated identity-merge workflow (Theorem T4) once workflow machinery exists.
 
 ### 5.3 Bootstrap (fresh install)
 

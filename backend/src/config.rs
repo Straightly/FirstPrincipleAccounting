@@ -1,21 +1,36 @@
 //! Server configuration (Impl Spec §5.3).
 //!
-//! Lives outside any book folder; contains OAuth client settings and the
-//! bootstrap owner identity. Never contains book keys or passphrases.
+//! Lives outside any book folder; contains authentication provider settings
+//! and the bootstrap owner identity. Never contains book keys or passphrases.
 
 use serde::Deserialize;
 use std::path::Path;
 
+/// One authentication domain as pure data (Theorem T2): any OIDC/OAuth2
+/// provider — Google, Microsoft, an enterprise IdP — is a record of this
+/// shape, not code.
 #[derive(Debug, Clone, Deserialize)]
-pub struct GoogleOAuthConfig {
+pub struct AuthProviderConfig {
+    /// Stable identifier used in routes (/api/auth/{id}/...) and the AKA table.
+    pub id: String,
+    pub display_name: String,
+    /// OAuth2 authorization endpoint.
+    pub auth_url: String,
+    /// OAuth2 token endpoint.
+    pub token_url: String,
+    /// OIDC userinfo endpoint.
+    pub userinfo_url: String,
     pub client_id: String,
     pub client_secret: String,
+    /// Must match the redirect URI registered with the provider:
+    /// {base}/api/auth/{id}/callback
     pub redirect_url: String,
+    #[serde(default = "default_scopes")]
+    pub scopes: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct OAuthConfig {
-    pub google: GoogleOAuthConfig,
+fn default_scopes() -> String {
+    "openid email profile".to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -37,7 +52,10 @@ pub struct ServerConfig {
     pub bootstrap_owner_email: String,
     #[serde(default = "default_session_ttl")]
     pub session_ttl_seconds: u64,
-    pub oauth: OAuthConfig,
+    /// Authentication domains registered at startup. More can be added at
+    /// runtime through the provider registry (Theorem T3).
+    #[serde(default)]
+    pub auth_providers: Vec<AuthProviderConfig>,
     #[serde(default)]
     pub dev_login: DevLoginConfig,
 }

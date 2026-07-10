@@ -1,11 +1,16 @@
-//! Authentication handlers: Google OAuth flow, dev login, sessions, and the
-//! owner-gated skeleton endpoint (Impl Spec §5.2, §5.3).
+//! Authentication handlers: provider-blind login flow, dev login, sessions,
+//! and the owner-gated skeleton endpoint (Impl Spec §5.2, §5.3).
+//!
+//! Theorem T2 (docs/LedgerZero_Theorems.md): these handlers contain no
+//! provider-specific logic. A new authentication domain is a registry entry;
+//! nothing here changes.
 
+use crate::auth_provider::AuthenticatedIdentity;
 use crate::authz::Action;
 use crate::error::ApiError;
 use crate::state::SharedState;
 use crate::users::User;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
@@ -17,19 +22,6 @@ const SESSION_COOKIE: &str = "lz_session";
 const OAUTH_STATE_TTL: Duration = Duration::from_secs(600);
 
 // ---------- helpers ----------
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
 
 fn session_token(headers: &HeaderMap) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
@@ -84,11 +76,17 @@ pub fn current_user(state: &SharedState, headers: &HeaderMap) -> Result<User, Ap
     }
 }
 
-fn login_user(state: &SharedState, user: &User) -> Response {
+/// Establish a session for a verified external identity. Provider-blind:
+/// every authentication domain funnels through here (Theorem T5).
+fn establish_session(state: &SharedState, identity: &AuthenticatedIdentity) -> (User, String) {
+    let user = state.users.resolve_identity(
+        &identity.provider_id,
+        &identity.subject,
+        &identity.email,
+        &identity.display_name,
+    );
     let token = state.sessions.create(user.user_id);
-    let body = Json(MeResponse::build(state, user));
-    let response = (StatusCode::OK, body).into_response();
-    with_session_cookie(response, &token, state.config.session_ttl_seconds)
+    (user, token)
 }
 
 // ---------- responses ----------
@@ -111,8 +109,14 @@ impl MeResponse {
 }
 
 #[derive(Serialize)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Serialize)]
 pub struct AuthConfigResponse {
-    pub google_configured: bool,
+    pub providers: Vec<ProviderInfo>,
     pub dev_login_enabled: bool,
 }
 
@@ -126,10 +130,17 @@ pub async fn health() -> Json<serde_json::Value> {
     }))
 }
 
-/// GET /api/auth/config — what login methods the launcher should offer.
+/// GET /api/auth/config — login methods the launcher should offer. Read from
+/// the registry per-request, so runtime-added domains appear immediately (T3).
 pub async fn auth_config(State(state): State<SharedState>) -> Json<AuthConfigResponse> {
+    let providers = state
+        .providers
+        .list()
+        .into_iter()
+        .map(|(id, display_name)| ProviderInfo { id, display_name })
+        .collect();
     Json(AuthConfigResponse {
-        google_configured: !state.config.oauth.google.client_id.is_empty(),
+        providers,
         dev_login_enabled: state.config.dev_login.enabled,
     })
 }
@@ -143,64 +154,51 @@ pub async fn me(
     Ok(Json(MeResponse::build(&state, &user)))
 }
 
-/// GET /api/auth/google/login — redirect to Google's consent screen.
-pub async fn google_login(State(state): State<SharedState>) -> Result<Response, ApiError> {
-    let google = &state.config.oauth.google;
-    if google.client_id.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "OAUTH_NOT_CONFIGURED",
-            "Google OAuth client is not configured in server.config.toml",
-        ));
-    }
+fn unknown_provider(provider_id: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        "UNKNOWN_PROVIDER",
+        format!("no authentication provider '{provider_id}' is registered"),
+    )
+}
+
+/// GET /api/auth/{provider}/login — redirect to the domain's consent screen.
+pub async fn provider_login(
+    State(state): State<SharedState>,
+    Path(provider_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let Some(provider) = state.providers.get(&provider_id) else {
+        return Err(unknown_provider(&provider_id));
+    };
     let csrf = Uuid::new_v4().to_string();
     {
         let mut states = state.oauth_states.write().expect("oauth state lock");
         let now = Instant::now();
-        states.retain(|_, created| now.duration_since(*created) < OAUTH_STATE_TTL);
-        states.insert(csrf.clone(), now);
+        states.retain(|_, (created, _)| now.duration_since(*created) < OAUTH_STATE_TTL);
+        states.insert(csrf.clone(), (now, provider_id.clone()));
     }
-    let url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
-        urlencode(&google.client_id),
-        urlencode(&google.redirect_url),
-        urlencode("openid email profile"),
-        urlencode(&csrf),
-    );
+    let url = provider.authorization_url(&csrf);
     Ok(Redirect::temporary(&url).into_response())
 }
 
 #[derive(Deserialize)]
-pub struct GoogleCallbackParams {
+pub struct CallbackParams {
     pub code: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct GoogleTokenResponse {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct GoogleUserInfo {
-    sub: String,
-    email: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    email_verified: Option<bool>,
-}
-
-/// GET /api/auth/google/callback — code exchange, identity resolution, session.
-pub async fn google_callback(
+/// GET /api/auth/{provider}/callback — code exchange, identity, session.
+pub async fn provider_callback(
     State(state): State<SharedState>,
-    Query(params): Query<GoogleCallbackParams>,
+    Path(provider_id): Path<String>,
+    Query(params): Query<CallbackParams>,
 ) -> Result<Response, ApiError> {
+    let Some(provider) = state.providers.get(&provider_id) else {
+        return Err(unknown_provider(&provider_id));
+    };
     if let Some(error) = params.error {
-        state
-            .audit
-            .record("google_login", "unknown", "denied", &error);
+        state.audit.record("login", &provider_id, "denied", &error);
         return Ok(Redirect::temporary("/?login_error=denied").into_response());
     }
     let (Some(code), Some(csrf)) = (params.code, params.state) else {
@@ -210,68 +208,33 @@ pub async fn google_callback(
         let mut states = state.oauth_states.write().expect("oauth state lock");
         let valid = states
             .remove(&csrf)
-            .map(|created| created.elapsed() < OAUTH_STATE_TTL)
+            .map(|(created, for_provider)| {
+                created.elapsed() < OAUTH_STATE_TTL && for_provider == provider_id
+            })
             .unwrap_or(false);
         if !valid {
             state.audit.record(
-                "google_login",
-                "unknown",
+                "login",
+                &provider_id,
                 "denied",
-                "unknown or expired OAuth state (possible CSRF)",
+                "unknown, expired, or mismatched OAuth state (possible CSRF)",
             );
             return Err(ApiError::invalid_input("unknown or expired OAuth state"));
         }
     }
 
-    let google = &state.config.oauth.google;
-    let client = reqwest::Client::new();
-    let token: GoogleTokenResponse = client
-        .post("https://oauth2.googleapis.com/token")
-        .form(&[
-            ("code", code.as_str()),
-            ("client_id", google.client_id.as_str()),
-            ("client_secret", google.client_secret.as_str()),
-            ("redirect_uri", google.redirect_url.as_str()),
-            ("grant_type", "authorization_code"),
-        ])
-        .send()
-        .await
-        .map_err(|e| ApiError::internal(format!("token exchange failed: {e}")))?
-        .json()
-        .await
-        .map_err(|e| ApiError::internal(format!("token response invalid: {e}")))?;
-
-    let info: GoogleUserInfo = client
-        .get("https://openidconnect.googleapis.com/v1/userinfo")
-        .bearer_auth(&token.access_token)
-        .send()
-        .await
-        .map_err(|e| ApiError::internal(format!("userinfo failed: {e}")))?
-        .json()
-        .await
-        .map_err(|e| ApiError::internal(format!("userinfo response invalid: {e}")))?;
-
-    let Some(email) = info.email else {
+    let identity = provider.exchange_code(&code).await?;
+    if !identity.email_verified {
         state.audit.record(
-            "google_login",
-            &info.sub,
+            "login",
+            &identity.email,
             "denied",
-            "Google identity has no email claim",
+            "email not verified by provider",
         );
-        return Err(ApiError::unauthenticated("Google identity has no email"));
-    };
-    if info.email_verified == Some(false) {
-        state
-            .audit
-            .record("google_login", &email, "denied", "email not verified");
-        return Err(ApiError::unauthenticated("Google email is not verified"));
+        return Err(ApiError::unauthenticated("email is not verified"));
     }
 
-    let display_name = info.name.unwrap_or_else(|| email.clone());
-    let user = state
-        .users
-        .resolve_identity("google", &info.sub, &email, &display_name);
-    let token = state.sessions.create(user.user_id);
+    let (_user, token) = establish_session(&state, &identity);
     let response = Redirect::temporary("/").into_response();
     Ok(with_session_cookie(
         response,
@@ -305,11 +268,21 @@ pub async fn dev_login(
     if email.is_empty() || !email.contains('@') {
         return Err(ApiError::invalid_input("a valid email is required"));
     }
-    let display_name = request.display_name.unwrap_or_else(|| email.clone());
-    let user = state
-        .users
-        .resolve_identity("dev", &email, &email, &display_name);
-    Ok(login_user(&state, &user))
+    let identity = AuthenticatedIdentity {
+        provider_id: "dev".to_string(),
+        subject: email.clone(),
+        display_name: request.display_name.unwrap_or_else(|| email.clone()),
+        email,
+        email_verified: true,
+    };
+    let (user, token) = establish_session(&state, &identity);
+    let body = Json(MeResponse::build(&state, &user));
+    let response = (StatusCode::OK, body).into_response();
+    Ok(with_session_cookie(
+        response,
+        &token,
+        state.config.session_ttl_seconds,
+    ))
 }
 
 /// POST /api/auth/refresh — rotate the session token (Impl Spec §5.2).

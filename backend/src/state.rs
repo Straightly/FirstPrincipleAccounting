@@ -1,6 +1,7 @@
 //! Shared application state for the routing server.
 
 use crate::audit::OpsAudit;
+use crate::auth_provider::ProviderRegistry;
 use crate::authz::Authorizer;
 use crate::config::ServerConfig;
 use crate::sessions::SessionStore;
@@ -16,8 +17,10 @@ pub struct AppState {
     pub sessions: SessionStore,
     pub authz: Authorizer,
     pub audit: OpsAudit,
-    /// Outstanding OAuth CSRF `state` tokens and their creation time.
-    pub oauth_states: RwLock<HashMap<String, Instant>>,
+    /// Authentication domains; runtime-mutable (Theorem T3).
+    pub providers: ProviderRegistry,
+    /// Outstanding OAuth CSRF `state` tokens: token -> (created, provider_id).
+    pub oauth_states: RwLock<HashMap<String, (Instant, String)>>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -27,12 +30,14 @@ impl AppState {
         let sessions = SessionStore::new(config.session_ttl_seconds);
         let authz = Authorizer::new(&config.bootstrap_owner_email);
         let audit = OpsAudit::new(PathBuf::from(&config.ops_audit_log));
+        let providers = ProviderRegistry::from_config(&config.auth_providers);
         Self {
             config,
             users: UserStore::new(),
             sessions,
             authz,
             audit,
+            providers,
             oauth_states: RwLock::new(HashMap::new()),
         }
     }

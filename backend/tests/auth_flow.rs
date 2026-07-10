@@ -5,15 +5,28 @@ use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use ledgerzero_backend::app::build_router;
-use ledgerzero_backend::config::{
-    DevLoginConfig, GoogleOAuthConfig, OAuthConfig, ServerConfig,
-};
+use ledgerzero_backend::auth_provider::OidcProvider;
+use ledgerzero_backend::config::{AuthProviderConfig, DevLoginConfig, ServerConfig};
 use ledgerzero_backend::state::AppState;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 const OWNER: &str = "zhian.job@gmail.com";
+
+fn provider_config(id: &str) -> AuthProviderConfig {
+    AuthProviderConfig {
+        id: id.to_string(),
+        display_name: format!("{id} (test)"),
+        auth_url: format!("https://auth.{id}.example/authorize"),
+        token_url: format!("https://auth.{id}.example/token"),
+        userinfo_url: format!("https://auth.{id}.example/userinfo"),
+        client_id: "test-client".to_string(),
+        client_secret: "test-secret".to_string(),
+        redirect_url: format!("http://localhost:8080/api/auth/{id}/callback"),
+        scopes: "openid email profile".to_string(),
+    }
+}
 
 fn test_state() -> (Arc<AppState>, std::path::PathBuf) {
     let audit_path =
@@ -25,13 +38,7 @@ fn test_state() -> (Arc<AppState>, std::path::PathBuf) {
         ops_audit_log: audit_path.to_string_lossy().to_string(),
         bootstrap_owner_email: OWNER.to_string(),
         session_ttl_seconds: 3600,
-        oauth: OAuthConfig {
-            google: GoogleOAuthConfig {
-                client_id: String::new(),
-                client_secret: String::new(),
-                redirect_url: String::new(),
-            },
-        },
+        auth_providers: vec![provider_config("google")],
         dev_login: DevLoginConfig { enabled: true },
     };
     (Arc::new(AppState::new(config)), audit_path)
@@ -207,6 +214,122 @@ async fn dev_login_rejected_when_disabled() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let body = body_json(response).await;
     assert_eq!(body["error_code"], "UNAUTHORIZED_API");
+}
+
+// ---------- Theorem tests (docs/LedgerZero_Theorems.md) ----------
+
+#[tokio::test]
+async fn theorem_t2_new_domain_is_pure_data() {
+    // Adding an authentication domain is a data record — no code changes.
+    let (state, _) = test_state();
+    let app = build_router(state.clone());
+
+    // "Microsoft" as pure configuration data:
+    state
+        .providers
+        .register(Arc::new(OidcProvider::new(provider_config("microsoft"))));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/microsoft/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(location.starts_with("https://auth.microsoft.example/authorize"));
+}
+
+#[tokio::test]
+async fn theorem_t3_domain_added_while_running_is_immediately_usable() {
+    // The router is already built and serving; register a new domain AFTER —
+    // it must appear in /api/auth/config and serve logins with no restart.
+    let (state, _) = test_state();
+    let app = build_router(state.clone());
+
+    let before = app
+        .clone()
+        .oneshot(Request::builder().uri("/api/auth/config").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let before_body = body_json(before).await;
+    let before_ids: Vec<String> = before_body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!before_ids.contains(&"acme-sso".to_string()));
+
+    state
+        .providers
+        .register(Arc::new(OidcProvider::new(provider_config("acme-sso"))));
+
+    let after = app
+        .clone()
+        .oneshot(Request::builder().uri("/api/auth/config").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let after_body = body_json(after).await;
+    let after_ids: Vec<String> = after_body["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(after_ids.contains(&"acme-sso".to_string()));
+
+    let login = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/acme-sso/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::TEMPORARY_REDIRECT);
+
+    // And a domain can be disabled at runtime too.
+    state.providers.deregister("acme-sso");
+    let gone = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/acme-sso/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn unknown_provider_is_structured_404() {
+    let (app, _) = app();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/nonexistent/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = body_json(response).await;
+    assert_eq!(body["error_code"], "UNKNOWN_PROVIDER");
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@
 pub mod app;
 pub mod audit;
 pub mod auth;
+pub mod auth_provider;
 pub mod authz;
 pub mod config;
 pub mod error;

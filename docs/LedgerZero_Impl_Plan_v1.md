@@ -135,4 +135,6 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 ## Deferred (tracked, not scheduled)
 
-Cross-server consolidation auth; FX translation between books; consolidation scheduling beyond on-demand; year-end close workflow; reporting tools; re-open-by-branching; brokerage import; containerization; SQLite/Postgres drivers.
+Cross-server consolidation auth; FX translation between books; consolidation scheduling beyond on-demand; year-end close workflow; reporting tools; re-open-by-branching; brokerage import; containerization; SQLite/Postgres drivers; identity-merge workflow (Theorem T4) and runtime provider-administration workflow (Theorem T3) once workflow machinery exists (M6+).
+
+Standing architectural guarantees are tracked in `LedgerZero_Theorems.md`; every milestone must preserve them.

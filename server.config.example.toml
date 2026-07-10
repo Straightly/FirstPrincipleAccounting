@@ -20,12 +20,33 @@ bootstrap_owner_email = "zhian.job@gmail.com"
 # Session lifetime in seconds (spec §5.2: short-lived, 1 hour).
 session_ttl_seconds = 3600
 
-[oauth.google]
+# Authentication domains (Theorems T2/T3 in docs/LedgerZero_Theorems.md).
+# Each domain is a pure data record; add more [[auth_providers]] blocks for
+# Microsoft, an enterprise IdP, etc. Providers with an empty client_id are
+# skipped. Domains can also be added at runtime through the provider registry.
+[[auth_providers]]
+id = "google"
+display_name = "Google"
+auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url = "https://oauth2.googleapis.com/token"
+userinfo_url = "https://openidconnect.googleapis.com/v1/userinfo"
 # Create OAuth 2.0 Client credentials (type: Web application) in Google Cloud
-# Console. Authorized redirect URI must match redirect_url below.
+# Console. The authorized redirect URI must match redirect_url below.
 client_id = ""
 client_secret = ""
 redirect_url = "http://localhost:8080/api/auth/google/callback"
+# scopes = "openid email profile"   # default
+
+# Example second domain — uncomment and fill in to add Microsoft (no code changes):
+# [[auth_providers]]
+# id = "microsoft"
+# display_name = "Microsoft"
+# auth_url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+# token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+# userinfo_url = "https://graph.microsoft.com/oidc/userinfo"
+# client_id = ""
+# client_secret = ""
+# redirect_url = "http://localhost:8080/api/auth/microsoft/callback"
 
 [dev_login]
 # Development-only login that bypasses Google OAuth: POST /api/auth/dev-login
