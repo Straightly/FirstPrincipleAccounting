@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- LedgerZero ---
+# Rust build output (also matched by target/ above; explicit for clarity)
+/target/
+# Frontend
+node_modules/
+frontend/dist/
+# Local server configuration (contains OAuth client secret) — commit the .example only
+server.config.toml
+# Local runtime data
+books/
+ops_audit.jsonl

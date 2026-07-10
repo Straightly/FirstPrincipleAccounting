@@ -1,0 +1,11 @@
+[package]
+name = "ledgerzero-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LedgerZero AccountingEngine: invariants, domain logic, storage boundary"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

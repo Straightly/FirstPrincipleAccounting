@@ -1,0 +1,33 @@
+# LedgerZero server configuration (Impl Spec §5.3).
+# Copy to server.config.toml (gitignored) and fill in OAuth credentials.
+# This file lives OUTSIDE any book folder and never contains book keys.
+
+listen_addr = "127.0.0.1:8080"
+
+# Directory that holds AccountingBook folders.
+books_dir = "./books"
+
+# Built frontend launcher assets served by the routing server.
+frontend_dist = "./frontend/dist"
+
+# Operational audit log (failed auth attempts etc.) — separate from any ledger.
+ops_audit_log = "./ops_audit.jsonl"
+
+# On a fresh install, only this authenticated identity may create or open books
+# and reach owner-gated endpoints.
+bootstrap_owner_email = "zhian.job@gmail.com"
+
+# Session lifetime in seconds (spec §5.2: short-lived, 1 hour).
+session_ttl_seconds = 3600
+
+[oauth.google]
+# Create OAuth 2.0 Client credentials (type: Web application) in Google Cloud
+# Console. Authorized redirect URI must match redirect_url below.
+client_id = ""
+client_secret = ""
+redirect_url = "http://localhost:8080/api/auth/google/callback"
+
+[dev_login]
+# Development-only login that bypasses Google OAuth: POST /api/auth/dev-login
+# {"email": "..."}. NEVER enable on a network-reachable deployment.
+enabled = false
