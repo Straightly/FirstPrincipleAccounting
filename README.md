@@ -1,21 +1,34 @@
-# FirstPrincipleAccounting
+# LedgerZero (FirstPrincipleAccounting)
 
-Starter layout for a first-principles accounting system with:
+A first-principles, AI-native accounting platform. Authoritative documents:
 
-- `frontend/` reserved for a future user-facing application
-- `mcp_server/` for the Python MCP server and accounting engine layers
+- `docs/LedgerZero_Impl_Spec_v1.md` — implementation spec (build from this)
+- `docs/LedgerZero_Impl_Plan_v1.md` — milestone plan
+- `docs/LedgerZero_Spec.md` — original vision/design document
 
-## Structure
+## Layout
 
-- `frontend/`
-  - Empty placeholder for now
-- `mcp_server/`
-  - `src/first_principle_accounting/domain/` domain model and invariants
-  - `src/first_principle_accounting/application/` use-case layer and ports
-  - `src/first_principle_accounting/storage/` storage abstractions and file driver
-  - `src/first_principle_accounting/engine/` ledger engine orchestration
-  - `src/first_principle_accounting/mcp/` MCP-facing adapter layer
-  - `src/first_principle_accounting/cli/` local bootstrap and entry points
-  - `tests/` test package placeholder
+- `engine/` — Rust crate: the `AccountingEngine` (invariants, domain, storage boundary)
+- `backend/` — Rust crate: routing server + runtime backend (Axum); the only component with storage access
+- `frontend/` — React + Vite launcher (login, session, workflow menu); each workflow is later deployed as its own self-contained React app
+- `mcp_server/` — Python MCP server + dev-time backend (LLM/workflow generation); no accounting storage access
+- `scripts/check.sh` — builds and tests everything
 
-## This is implementation using Codex.  Will try Gemini and Claude Code too.
+## Getting started
+
+Prerequisites: Rust (rustup.rs), Node.js 20+, Python 3.11+.
+
+```bash
+./scripts/check.sh                                 # build + test all components
+cp server.config.example.toml server.config.toml   # then edit
+(cd frontend && npm install && npm run build)
+cargo run -p ledgerzero-backend                    # serves http://localhost:8080
+```
+
+`server.config.toml` (gitignored) holds the bootstrap owner email and Google
+OAuth client credentials (Impl Spec §5.3). For local development without OAuth
+credentials, set `[dev_login] enabled = true` — never on a network-reachable
+deployment.
+
+Frontend development with hot reload: `cd frontend && npm run dev` (proxies
+`/api` to the backend on :8080).
