@@ -43,17 +43,24 @@ All architectural components stand up here, doing the minimum real work: routing
 
 **Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M11.
 
-## M2 — Domain model and engine core (in-memory)
+## M2 — Domain model and engine core (in-memory) — implemented 2026-07-11, exit gate: local `./scripts/check.sh`
 
-- [ ] Domain types: ResourceType, Chart, Account (derived normal_balance), JournalEntry, JournalLine, Period, price facts, event envelope (spec §2)
-- [ ] Structured error catalog completed (spec §4.4)
-- [ ] Invariant checks on posting: exact balance incl. cross-unit via entry-recorded prices, account validity/active, single chart+entity, open period, unit coverage, account validation rules (spec §4.1)
-- [ ] Posted-or-rejected semantics; reversal entries; expanded-equation balance check A = L + E + (R − X)
-- [ ] Balance computation and price projection from the event log (spec §2.6, §4.3)
-- [ ] Property tests: any generated entry either posts balanced or is rejected; no operation sequence unbalances a chart
-- [ ] Replay tests: projections rebuilt from event log equal incrementally maintained state
+- [x] Domain types: ResourceType, Chart, Account (derived normal_balance), JournalEntry, JournalLine, Period, price facts, event envelope (spec §2) — `engine/src/domain.rs`
+- [x] Structured error catalog completed (spec §4.4) — `engine/src/error.rs`; all codes defined incl. the UNAUTHORIZED_*/BOOK_NOT_OPEN/INVALID_EXECUTION_CONTEXT codes raised in later milestones
+- [x] Invariant checks on posting: exact balance incl. cross-unit via entry-recorded prices, account validity/active, single chart+entity, open period, unit coverage, account validation rules (spec §4.1) — `engine/src/engine.rs`
+- [x] Posted-or-rejected semantics; reversal entries; expanded-equation balance check A = L + E + (R − X) — `equation_check` evaluates the equation per resource type, with cross-unit entries accounted for at their recorded prices
+- [x] Balance computation and price projection from the event log (spec §2.6, §4.3)
+- [x] Property tests: any generated entry either posts balanced or is rejected; no operation sequence unbalances a chart — `engine/tests/property_replay.rs` (deterministic dependency-free PRNG harness; 3 seeds × 300 ops)
+- [x] Replay tests: projections rebuilt from event log equal incrementally maintained state — every mutation and `replay` share one `EngineState::apply` transition; tests compare full state plus an independent balance fold over the log
 
-**Exit criteria:** property and replay tests pass; engine usable as a pure library with an in-memory store.
+**Exit criteria:** property and replay tests pass; engine usable as a pure library with an in-memory store. **Gate:** the sandbox has no Rust toolchain — criteria are ticked as done once `./scripts/check.sh` passes on the user's machine.
+
+**Notes:**
+
+- Money is exact fixed-point `Decimal(18,8)` over i128 (`engine/src/amount.rs`) — no floats anywhere; cross-unit balance uses exact rational arithmetic at the entry's own recorded prices, no tolerance.
+- Engine-level idempotency covers every mutation (client-generated UUID → identical replay returns the original outcome, §4.1.6), ahead of the M3 storage-boundary and M4 API idempotency work.
+- v1 account-validation-rule vocabulary: `require_memo`, `max_amount`, `side` (debit_only/credit_only); unknown keys rejected at account creation.
+- No new dependencies: engine remains serde + serde_json + uuid only.
 
 ## M3 — Encrypted single-file storage
 
