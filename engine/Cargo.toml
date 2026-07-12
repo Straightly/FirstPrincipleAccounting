@@ -9,3 +9,12 @@ description = "LedgerZero AccountingEngine: invariants, domain logic, storage bo
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+tokio = { workspace = true }
+async-trait = "0.1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt-multi-thread"] }

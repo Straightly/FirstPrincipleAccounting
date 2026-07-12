@@ -10,14 +10,15 @@
 //! - [`engine`] — [`engine::AccountingEngine`]: posted-or-rejected mutations,
 //!   §4.1 invariants, balances, price projection, replay.
 //!
-//! The async storage boundary (M3) will persist [`domain::EventRecord`]s and
-//! reference state, and rebuild everything through [`engine::EngineState::replay`]
+//! The async storage boundary ([`storage`], M3) persists [`domain::EventRecord`]s
+//! only and rebuilds everything through [`engine::EngineState::replay`]
 //! (Theorem T1: nothing above this crate may depend on the storage medium).
 
 pub mod amount;
 pub mod domain;
 pub mod engine;
 pub mod error;
+pub mod storage;
 pub mod types;
 
 pub use amount::Amount;
