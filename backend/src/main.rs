@@ -10,8 +10,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    let config_path =
-        std::env::args().nth(1).unwrap_or_else(|| "server.config.toml".to_string());
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "server.config.toml".to_string());
     let config = match ServerConfig::load(Path::new(&config_path)) {
         Ok(config) => config,
         Err(error) => {

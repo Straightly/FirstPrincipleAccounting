@@ -302,11 +302,7 @@ pub async fn refresh(
         );
         return Err(ApiError::unauthenticated("invalid or expired session"));
     };
-    let response = (
-        StatusCode::OK,
-        Json(serde_json::json!({ "rotated": true })),
-    )
-        .into_response();
+    let response = (StatusCode::OK, Json(serde_json::json!({ "rotated": true }))).into_response();
     Ok(with_session_cookie(
         response,
         &new_token,

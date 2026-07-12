@@ -8,30 +8,40 @@ Working rules for each milestone:
 - Tests written inside the milestone, not deferred (spec §7.5).
 - If implementation reveals a spec problem, record the resolution in the Impl Spec (and Appendix A) before coding around it.
 
-## M0 — Repository scaffold
+## M0 — Repository scaffold ✅ DONE (2026-07-11)
 
-- [ ] Create Rust workspace: `engine/` and `backend/` crates (spec §7.2)
-- [ ] Scaffold `frontend/` React + Vite launcher (empty shell: builds and serves a page)
-- [ ] Restructure `mcp_server/`: remove `engine/` and `storage/` modules; keep MCP + dev-time backend skeleton
-- [ ] Add `server.config.example.toml` (OAuth config, books dir, listen address, bootstrap_owner_email)
-- [ ] Wire `cargo test`, `cargo clippy`, frontend build, and Python tests into a single check script / CI
+- [x] Create Rust workspace: `engine/` and `backend/` crates (spec §7.2)
+- [x] Scaffold `frontend/` React + Vite launcher (empty shell: builds and serves a page)
+- [x] Restructure `mcp_server/`: remove `engine/` and `storage/` modules; keep MCP + dev-time backend skeleton
+- [x] Add `server.config.example.toml` (OAuth config, books dir, listen address, bootstrap_owner_email)
+- [x] Wire `cargo test`, `cargo clippy`, frontend build, and Python tests into a single check script / CI (`scripts/check.sh`)
 
-**Exit criteria:** clean clone builds everything; all (empty) test suites pass.
+**Exit criteria:** clean clone builds everything; all (empty) test suites pass. **Met:** `./scripts/check.sh` passes on the user's machine.
 
-## M1 — Walking skeleton: authentication & authorization
+**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M11, which now only needs to extend them.
+
+## M1 — Walking skeleton: authentication & authorization ✅ DONE (2026-07-11)
 
 All architectural components stand up here, doing the minimum real work: routing, login, sessions, and authority checks — no accounting yet.
 
-- [ ] Axum server as the routing server: serves launcher assets, routes API requests (spec §7.1)
-- [ ] Google OAuth login flow; user records; AKA mapping `(provider, subject) → user_id` (spec §2.9, §5.2)
-- [ ] Session tokens (1h) with refresh rotation; every API call carries a verified identity claim
-- [ ] Bootstrap authorization from `server.config.toml`: on a fresh install, only `bootstrap_owner_email` passes owner-gated endpoints (spec §5.3)
-- [ ] Authorization framework: role store lookup + structured UNAUTHORIZED_* errors (spec §4.4); workflow-scoped enforcement completes in M6 when deployments exist
-- [ ] Operational audit log for failed authentications/authorizations, separate from the ledger (spec §5.2)
-- [ ] Launcher: Google login, session handling, and a protected "who am I / what may I do" page proving the full path browser → routing → backend
-- [ ] Integration tests: unauthenticated rejected, authenticated non-owner rejected at owner-gated endpoints, bootstrap owner accepted, token expiry/refresh
+- [x] Axum server as the routing server: serves launcher assets, routes API requests (spec §7.1)
+- [x] Google OAuth login flow; user records; AKA mapping `(provider, subject) → user_id` (spec §2.9, §5.2)
+- [x] Session tokens (1h) with refresh rotation; every API call carries a verified identity claim
+- [x] Bootstrap authorization from `server.config.toml`: on a fresh install, only `bootstrap_owner_email` passes owner-gated endpoints (spec §5.3)
+- [x] Authorization framework: role store lookup + structured UNAUTHORIZED_* errors (spec §4.4); workflow-scoped enforcement completes in M6 when deployments exist
+- [x] Operational audit log for failed authentications/authorizations, separate from the ledger (spec §5.2)
+- [x] Launcher: Google login, session handling, and a protected "who am I / what may I do" page proving the full path browser → routing → backend
+- [x] Integration tests: unauthenticated rejected, authenticated non-owner rejected at owner-gated endpoints, bootstrap owner accepted, token expiry/refresh
 
-**Exit criteria:** in a browser: login with Google, see identity and authority; owner-gated test endpoint accepts only the bootstrap owner. All components (backend, frontend, config) participating.
+**Exit criteria:** in a browser: login with Google, see identity and authority; owner-gated test endpoint accepts only the bootstrap owner. All components (backend, frontend, config) participating. **Met:** verified by the user 2026-07-11 with real Google OAuth credentials against a locally deployed release package.
+
+**Delivered beyond plan:**
+
+- Pluggable authentication: `IdentityProvider` interface with data-driven `OidcProvider` and a runtime-mutable `ProviderRegistry` — new OIDC domains (Microsoft, enterprise IdP) are config records addable while the server runs, no code change or restart (Theorems T2/T3 in `LedgerZero_Theorems.md`, which was also created here with verifying tests). This was planned as bare "Google OAuth"; the generalization landed early.
+- `dev_login` provider for credential-free local development (spec §5.2; must be disabled on any non-local deployment).
+- `GET /api/health` liveness endpoint for basic monitoring (spec §7.1).
+
+**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M11.
 
 ## M2 — Domain model and engine core (in-memory)
 
@@ -125,6 +135,8 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 **Exit criteria:** parent book consolidates a child book on one deployment; re-runs create no duplicates.
 
 ## M11 — Hardening and deployment
+
+Partially pre-done during M0/M1: `scripts/package.sh` (release tarball) and `docs/LedgerZero_Run_and_Deploy.md` (local run, deployment rehearsal, monitoring signals, remote-deployment caveats) already exist; this milestone extends them.
 
 - [ ] Oracle Cloud VM deployment (systemd or equivalent) and on-premise instructions
 - [ ] MFA guidance, ingress restrictions for non-local deployments (spec §5.5)

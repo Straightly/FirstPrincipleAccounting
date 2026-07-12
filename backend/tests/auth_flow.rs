@@ -101,7 +101,12 @@ async fn post_with_cookie(app: &Router, uri: &str, cookie: &str) -> axum::respon
 async fn health_is_public() {
     let (app, _) = app();
     let response = app
-        .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -113,7 +118,12 @@ async fn health_is_public() {
 async fn unauthenticated_me_is_rejected_with_structured_error() {
     let (app, _) = app();
     let response = app
-        .oneshot(Request::builder().uri("/api/auth/me").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/me")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -258,7 +268,12 @@ async fn theorem_t3_domain_added_while_running_is_immediately_usable() {
 
     let before = app
         .clone()
-        .oneshot(Request::builder().uri("/api/auth/config").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let before_body = body_json(before).await;
@@ -276,7 +291,12 @@ async fn theorem_t3_domain_added_while_running_is_immediately_usable() {
 
     let after = app
         .clone()
-        .oneshot(Request::builder().uri("/api/auth/config").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let after_body = body_json(after).await;

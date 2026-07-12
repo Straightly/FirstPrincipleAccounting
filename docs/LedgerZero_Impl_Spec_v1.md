@@ -262,7 +262,7 @@ As in the original spec: structural enforcement at query/write boundaries; autho
 
 ### 5.2 Authentication
 
-OAuth2/OIDC; Google Login first. Authentication domains are pluggable behind the `IdentityProvider` interface: any OIDC domain (Google, Microsoft, an enterprise IdP) is a pure data record in a **runtime-mutable provider registry** — adding a domain requires no code change and no restart (Theorems T2/T3 in `LedgerZero_Theorems.md`). Short-lived (1h) session tokens with refresh rotation; every API call carries a verified identity claim; failed authorizations logged to a separate operational audit trail; AKA identity merging per 2.9, with a user-initiated identity-merge workflow (Theorem T4) once workflow machinery exists.
+OAuth2/OIDC; Google Login first. Authentication domains are pluggable behind the `IdentityProvider` interface: any OIDC domain (Google, Microsoft, an enterprise IdP) is a pure data record in a **runtime-mutable provider registry** — adding a domain requires no code change and no restart (Theorems T2/T3 in `LedgerZero_Theorems.md`). Short-lived (1h) session tokens with refresh rotation; every API call carries a verified identity claim; failed authorizations logged to a separate operational audit trail; AKA identity merging per 2.9, with a user-initiated identity-merge workflow (Theorem T4) once workflow machinery exists. A `dev_login` provider exists for credential-free local development only; it MUST be disabled (config) on any deployment reachable by others.
 
 ### 5.3 Bootstrap (fresh install)
 
@@ -327,7 +327,7 @@ Carried over from the original spec §7.5 with these updates:
 
 ### 7.1 Topology and stack
 
-**Backend: Rust end-to-end.** One Rust binary (Axum) is the routing server, authentication/authorization layer, runtime backend application server, and hosts the `AccountingEngine` in-process. It is the only component with storage access. It also serves the built frontend assets and deployed workflow artifacts.
+**Backend: Rust end-to-end.** One Rust binary (Axum) is the routing server, authentication/authorization layer, runtime backend application server, and hosts the `AccountingEngine` in-process. It is the only component with storage access. It also serves the built frontend assets and deployed workflow artifacts, and exposes `GET /api/health` as an unauthenticated liveness endpoint (fuller observability arrives with hardening, M11).
 
 **Frontend: self-contained React apps per workflow, plus a minimal launcher.** Each deployed workflow is a complete, standalone React app: its own bundle (including its own React copy), its own route, its own mount point — served from the artifact path. A minimal launcher app owns login, session, and the workflow menu, and simply navigates to each workflow's route. **There are no shared JavaScript dependencies between launcher and workflows** — no shared React instance, no import maps, no shell-provided context. Auth/session reaches workflows through the session cookie/token on backend API calls, not through frontend coupling. Deploying a workflow never rebuilds anything else. Cost: each workflow bundle carries React (~50 KB gzipped, cached after first load) — accepted as insignificant. Benefit: zero version-skew risk, and every deployed artifact is a complete, independently auditable app.
 

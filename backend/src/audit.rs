@@ -47,7 +47,11 @@ impl OpsAudit {
         };
         if let Ok(line) = serde_json::to_string(&record) {
             let _guard = self.lock.lock().expect("audit lock poisoned");
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&self.path) {
+            if let Ok(mut file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
                 let _ = writeln!(file, "{line}");
             }
         }

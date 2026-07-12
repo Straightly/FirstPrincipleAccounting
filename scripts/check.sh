@@ -6,6 +6,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 FAILED=0
 
+# Cargo may not be on the shell's PATH: rustup.rs installs to ~/.cargo/bin,
+# Homebrew's keg-only rustup to /opt/homebrew/opt/rustup/bin.
+if ! command -v cargo >/dev/null 2>&1; then
+  [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+  [ -x /opt/homebrew/opt/rustup/bin/cargo ] && PATH="/opt/homebrew/opt/rustup/bin:$PATH"
+fi
+
 step() { printf '\n\033[1m== %s ==\033[0m\n' "$1"; }
 fail() { printf '\033[31mFAILED: %s\033[0m\n' "$1"; FAILED=1; }
 

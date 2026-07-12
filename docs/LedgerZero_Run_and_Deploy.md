@@ -49,16 +49,60 @@ metrics, tracing. In M1 there is no per-request visibility.
    (or the https equivalent on your public hostname).
 3. Fill `client_id` / `client_secret` in `server.config.toml`, restart.
 
-## 5. Deploy to a remote server
+## 5. Package a deployable artifact
 
-The deployable unit is three things:
+Production machines never see the git repo or a toolchain. Build the artifact
+on your development machine:
 
 ```bash
-cargo build --release                    # → target/release/ledgerzero-backend
-(cd frontend && npm run build)           # → frontend/dist
-# copy: the binary, frontend/dist/, and a server.config.toml
-./ledgerzero-backend /etc/ledgerzero/server.config.toml
+./scripts/package.sh    # → dist/ledgerzero-<version>-<stamp>.tar.gz
 ```
+
+The tarball contains the release binary, the built frontend, the example
+config, a README.txt, and this document as DEPLOY.md — everything the target
+machine needs.
+
+### Local deployment rehearsal
+
+Prove the artifact is self-contained by "deploying" it to a fresh directory
+on your own machine, outside the repo:
+
+```bash
+tar -xzf dist/ledgerzero-*.tar.gz -C /tmp
+cd /tmp/ledgerzero-*/
+cp server.config.example.toml server.config.toml
+# edit server.config.toml:
+#   listen_addr = "127.0.0.1:8081"        # avoid clashing with a dev instance
+#   [dev_login] enabled = true            # fine locally; the rehearsal is about packaging
+./ledgerzero-backend server.config.toml
+```
+
+Verify from another terminal:
+
+```bash
+curl localhost:8081/api/health            # {"status":"ok",...}
+open http://localhost:8081                # launcher loads → assets packaged correctly
+# log in, check /api/admin/ping gating, then:
+ls books/ ops_audit.jsonl                 # created next to the binary, not in the repo
+```
+
+If all of that works from /tmp with no reference back to the repository, the
+same tarball + config edit is exactly what you ship to a real server.
+
+## 6. Deploy to a remote server
+
+Copy the tarball, unpack, configure, run:
+
+```bash
+scp dist/ledgerzero-*.tar.gz you@server:/opt/
+ssh you@server 'cd /opt && tar -xzf ledgerzero-*.tar.gz'
+# on the server: cp server.config.example.toml server.config.toml, edit, then
+./ledgerzero-backend server.config.toml
+```
+
+Note: the binary is built for your development machine's platform. A macOS
+build will not run on a Linux server — build on a matching platform (or
+cross-compile / build in CI) for real remote deployments.
 
 Required config changes on a remote machine:
 
@@ -80,7 +124,7 @@ Run it under a supervisor (systemd unit, `Restart=always`) and probe
   is the test endpoint `/api/admin/ping`.
 - No TLS in the server itself — terminate HTTPS at the reverse proxy.
 
-## 6. Quick API verification with curl
+## 7. Quick API verification with curl
 
 ```bash
 curl -i localhost:8080/api/admin/ping                 # 401 unauthenticated
