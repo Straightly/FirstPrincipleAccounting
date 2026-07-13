@@ -29,7 +29,7 @@ async fn authenticated_owner(state: &SharedState, headers: &HeaderMap) -> Result
             "authorization",
             &user.email,
             "denied",
-            "book API requires bootstrap owner (v1: no role system until M6)",
+            "book API requires bootstrap owner (v1: no role system until M5)",
         );
         return Err(err);
     }

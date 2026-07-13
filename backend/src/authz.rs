@@ -4,7 +4,7 @@
 //! whether that identity may perform the requested action. In M1 — before
 //! books, roles, and workflow deployments exist — the only durable authority
 //! is the bootstrap owner from server config. Workflow-scoped authorization
-//! (deployment `backend_api_calls`, execution context) completes in M6.
+//! (deployment `backend_api_calls`, execution context) completes in M5.
 
 use crate::error::ApiError;
 use crate::users::User;
@@ -15,7 +15,7 @@ pub enum Action {
     OpenBook,
     ListBooks,
     /// Every reference/ledger operation within an already-open book. v1 has
-    /// no role system yet (that arrives in M6), so — like book creation and
+    /// no role system yet (that arrives in M5), so — like book creation and
     /// opening — the only durable authority is the bootstrap owner (Impl
     /// Spec §5.3). Workflow-scoped, per-book authorization replaces this
     /// blanket check once roles and workflow deployments exist.

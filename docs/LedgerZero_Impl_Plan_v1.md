@@ -18,7 +18,7 @@ Working rules for each milestone:
 
 **Exit criteria:** clean clone builds everything; all (empty) test suites pass. **Met:** `./scripts/check.sh` passes on the user's machine.
 
-**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M11, which now only needs to extend them.
+**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M10, which now only needs to extend them.
 
 ## M1 — Walking skeleton: authentication & authorization ✅ DONE (2026-07-11)
 
@@ -28,7 +28,7 @@ All architectural components stand up here, doing the minimum real work: routing
 - [x] Google OAuth login flow; user records; AKA mapping `(provider, subject) → user_id` (spec §2.9, §5.2)
 - [x] Session tokens (1h) with refresh rotation; every API call carries a verified identity claim
 - [x] Bootstrap authorization from `server.config.toml`: on a fresh install, only `bootstrap_owner_email` passes owner-gated endpoints (spec §5.3)
-- [x] Authorization framework: role store lookup + structured UNAUTHORIZED_* errors (spec §4.4); workflow-scoped enforcement completes in M6 when deployments exist
+- [x] Authorization framework: role store lookup + structured UNAUTHORIZED_* errors (spec §4.4); workflow-scoped enforcement completes in M5 when deployments exist
 - [x] Operational audit log for failed authentications/authorizations, separate from the ledger (spec §5.2)
 - [x] Launcher: Google login, session handling, and a protected "who am I / what may I do" page proving the full path browser → routing → backend
 - [x] Integration tests: unauthenticated rejected, authenticated non-owner rejected at owner-gated endpoints, bootstrap owner accepted, token expiry/refresh
@@ -41,7 +41,7 @@ All architectural components stand up here, doing the minimum real work: routing
 - `dev_login` provider for credential-free local development (spec §5.2; must be disabled on any non-local deployment).
 - `GET /api/health` liveness endpoint for basic monitoring (spec §7.1).
 
-**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M11.
+**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M10.
 
 ## M2 — Domain model and engine core (in-memory) — implemented 2026-07-11, exit gate: local `./scripts/check.sh`
 
@@ -93,34 +93,28 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 **Notes:**
 
-- Authorization for every reference/ledger endpoint in this milestone is a blanket bootstrap-owner check (`Action::BookApi`) — v1 has no role system yet (that's M6). This is a known, documented gap, not an oversight: workflow-scoped, per-book authorization replaces it once roles and workflow deployments exist.
+- Authorization for every reference/ledger endpoint in this milestone is a blanket bootstrap-owner check (`Action::BookApi`) — v1 has no role system yet (that's M5). This is a known, documented gap, not an oversight: workflow-scoped, per-book authorization replaces it once roles and workflow deployments exist.
 - `list_books`/`create_book` are similarly owner-gated for now (`Action::ListBooks`/`Action::CreateAccountingBook`), consistent with "one owner at bootstrap" (spec §2.8); `BookMeta.owner_email` is recorded but not yet enforced per-book since there is only one authority in v1.
 - `copy_chart` copies within the same entity only (spec's contradiction-resolution notes for sub-books don't specify cross-entity chart copying); balances and transaction history are never copied, only chart/account structure.
 - No new dependencies beyond M3's; `backend/Cargo.toml` gained `tempfile` as a dev-dependency for the new HTTP tests.
 
-**Exit criteria:** with curl/httpie plus a browser login: create book, open book, set up chart/accounts/period, post entries, read balances — every call authenticated and authorized.
+## M5 — First hand-built workflow, with deployment and authorization machinery
 
-## M5 — First hand-built workflow
-
-- [ ] Launcher workflow menu navigating to workflow routes (spec §7.1)
-- [ ] Backend serves workflow artifacts from the artifact path
-- [ ] Hand-write (no AI) `Recording startup expense` as a standalone React app artifact — the reference artifact proving the contract: self-contained bundle, session-cookie auth, execution context (`book_id`, `entity_id`, `workflow_id`, `workflow_deployment_id`, `workflow_execution_id`) on every call
-- [ ] Manual-path authorization for this milestone (workflow machinery arrives in M6)
-
-**Exit criteria:** end-to-end in a browser: login → open book → run workflow → entry posted → balance visible.
-
-## M6 — Workflow deployment and authorization machinery
+Combined with what was originally two milestones (a hand-built workflow, then separately its deployment/authorization machinery) at the user's request: the old split meant the workflow would briefly run under stopgap "manual-path authorization" before real workflow-scoped auth replaced it. Building both together means there is never an interim state with weaker authorization than the finished design, and the very first workflow is verifiable end-to-end against real role/deployment checks from the start.
 
 - [ ] WorkflowDefinition contract, immutable deployment records, WORKFLOW_DEPLOYMENT events (spec §2.9)
 - [ ] Dev artifact store layout + hash verification (spec §7.4)
 - [ ] Auto-role on deployment; `create_role`, `assign_workflow_to_role`, `assign_role_to_user` as ROLE_ASSIGNMENT events
 - [ ] Complete the M1 authorization framework: workflow-scoped API checks (`backend_api_calls`), execution-context verification (spec §6.5)
-- [ ] Deploy the M5 workflow through this machinery (retire the manual path)
+- [ ] Launcher workflow menu navigating to workflow routes (spec §7.1)
+- [ ] Backend serves workflow artifacts from the artifact path
+- [ ] Hand-write (no AI) `Recording startup expense` as a standalone React app artifact — the reference artifact proving the contract: self-contained bundle, session-cookie auth, execution context (`book_id`, `entity_id`, `workflow_id`, `workflow_deployment_id`, `workflow_execution_id`) on every call
+- [ ] Deploy the artifact through the new machinery — no manual-path stopgap; it only ever runs via a valid deployment and role assignment
 - [ ] Tests: unauthorized workflow/API/context combinations rejected
 
-**Exit criteria:** M5 workflow runs only via a valid deployment and role assignment; authorization tests pass.
+**Exit criteria:** end-to-end in a browser: login → open book → run the workflow → entry posted → balance visible; the workflow runs only via a valid deployment and role assignment; authorization tests pass.
 
-## M7 — AI generation path (MCP + Python dev-time backend)
+## M6 — AI generation path (MCP + Python dev-time backend)
 
 - [ ] MCP primitives: `generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition` + admin primitives from spec §6.4
 - [ ] Python dev-time backend: LLM wrapping, prompt/context assembly, artifact preparation — no storage credentials, no persisted private context (Axiom 12)
@@ -129,7 +123,7 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 **Exit criteria:** a workflow authored by natural language runs in the browser with no hand-edits, or fails with an explicit missing-primitive answer.
 
-## M8 — Periods in practice and reconciliation
+## M7 — Periods in practice and reconciliation
 
 - [ ] `Reconcile bank accounts at EOP` workflow: compare projection vs expected balance, report discrepancies, corrections as new entries, result as administrative event (spec §6.6)
 - [ ] Period close/reopen exercised through workflows; closed-period posting rejected end-to-end
@@ -137,7 +131,7 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 **Exit criteria:** full monthly cycle: post, reconcile, close, attempt late post (rejected), reopen, correct, re-close.
 
-## M9 — Export and restore
+## M8 — Export and restore
 
 - [ ] `export_book`: encrypted JSON bundle, reader-passphrase encryption, deployment references + hashes, snapshot cut under writer lock + ledger marker (spec §7.3, §4.3)
 - [ ] `restore_book`: wipe-and-replace, IDs and `book_id` preserved, RESTORE event, unavailable-workflow marking when artifacts don't match by id+hash
@@ -145,7 +139,7 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 **Exit criteria:** a book moves to a new folder/deployment and keeps operating.
 
-## M10 — Sub-books and consolidation
+## M9 — Sub-books and consolidation
 
 - [ ] `create_sub_book` with owner choice and copy mode (all / none / owner-only; different owner → none) (spec §2.8)
 - [ ] SUB_BOOK_LINK events in both books; in-file link and rule projections
@@ -154,19 +148,19 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 **Exit criteria:** parent book consolidates a child book on one deployment; re-runs create no duplicates.
 
-## M11 — Hardening and deployment
+## M10 — Hardening and deployment
 
 Partially pre-done during M0/M1: `scripts/package.sh` (release tarball) and `docs/LedgerZero_Run_and_Deploy.md` (local run, deployment rehearsal, monitoring signals, remote-deployment caveats) already exist; this milestone extends them.
 
 - [ ] Oracle Cloud VM deployment (systemd or equivalent) and on-premise instructions
 - [ ] MFA guidance, ingress restrictions for non-local deployments (spec §5.5)
 - [ ] Operational docs: bootstrap, open-book, backup/push, ownership transfer (incl. git-history caveat), restore runbook
-- [ ] Full test-suite pass + a scripted demo covering M4–M10 flows
+- [ ] Full test-suite pass + a scripted demo covering M4–M9 flows
 
 **Exit criteria:** a fresh operator can install, bootstrap, and run the demo from docs alone.
 
 ## Deferred (tracked, not scheduled)
 
-Cross-server consolidation auth; FX translation between books; consolidation scheduling beyond on-demand; year-end close workflow; reporting tools; re-open-by-branching; brokerage import; containerization; SQLite/Postgres drivers; identity-merge workflow (Theorem T4) and runtime provider-administration workflow (Theorem T3) once workflow machinery exists (M6+).
+Cross-server consolidation auth; FX translation between books; consolidation scheduling beyond on-demand; year-end close workflow; reporting tools; re-open-by-branching; brokerage import; containerization; SQLite/Postgres drivers; identity-merge workflow (Theorem T4) and runtime provider-administration workflow (Theorem T3) once workflow machinery exists (M5+).
 
 Standing architectural guarantees are tracked in `LedgerZero_Theorems.md`; every milestone must preserve them.

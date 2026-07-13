@@ -26,11 +26,11 @@ pub enum ErrorCode {
     PeriodClosed,
     /// entry_date falls in no period of the entity.
     NoOpenPeriod,
-    /// Authorization re-check failed: workflow not permitted (M6+).
+    /// Authorization re-check failed: workflow not permitted (M5+).
     UnauthorizedWorkflow,
-    /// Authorization re-check failed: API not in deployment's set (M6+).
+    /// Authorization re-check failed: API not in deployment's set (M5+).
     UnauthorizedApi,
-    /// workflow_execution_id inconsistent with its context (M6+).
+    /// workflow_execution_id inconsistent with its context (M5+).
     InvalidExecutionContext,
     /// Known client ID with a different payload.
     IdempotencyConflict,

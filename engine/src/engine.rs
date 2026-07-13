@@ -1086,7 +1086,7 @@ impl AccountingEngine {
     }
 
     /// All §4.1 invariants that exist in M2. (Authorization and execution-
-    /// context checks — §4.1.5 — arrive with workflow machinery in M6;
+    /// context checks — §4.1.5 — arrive with workflow machinery in M5;
     /// idempotency — §4.1.6 — is checked by the caller before this runs.)
     fn validate_entry(&self, actor: Uuid, new: &NewEntry) -> Result<JournalEntry, EngineError> {
         // Structural (INVALID_INPUT).

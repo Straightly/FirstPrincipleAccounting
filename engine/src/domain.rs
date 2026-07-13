@@ -174,7 +174,7 @@ pub enum EntrySource {
     System,
 }
 
-/// Workflow execution context (populated from M5/M6 onward; None = manual).
+/// Workflow execution context (populated from M5 onward; None = manual).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowContext {
     pub workflow_id: Uuid,

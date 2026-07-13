@@ -57,7 +57,7 @@ Standing qualifications and characteristics of this application. A **theorem** h
 
 **Current basis.**
 - Automatic: the AKA table maps every `(provider, subject)` to a `user_id`; a new identity presenting an already-known verified email attaches to the existing user (`UserStore::resolve_identity`).
-- Deliberate merge (identities with different emails): a planned **identity-merge workflow** — the user proves control of both identities by logging into each, and the two user records merge into one with combined authorizations (Impl Spec §2.9). Scheduled once workflow machinery exists (M6+); the merge is recorded as an administrative ledger event.
+- Deliberate merge (identities with different emails): a planned **identity-merge workflow** — the user proves control of both identities by logging into each, and the two user records merge into one with combined authorizations (Impl Spec §2.9). Scheduled once workflow machinery exists (M5+); the merge is recorded as an administrative ledger event.
 
 **Obligations.**
 - The AKA table remains the single mapping from identities to users; no feature may key durable authority off a provider-specific identity directly.
@@ -74,7 +74,7 @@ Standing qualifications and characteristics of this application. A **theorem** h
 
 **Obligations.** Any new extension point must be reviewed against this theorem before it is built.
 
-**Verified by.** M1 authorization tests; M6 workflow-scope tests; standing code review rule.
+**Verified by.** M1 authorization tests; M5 workflow-scope tests; standing code review rule.
 
 ---
 
