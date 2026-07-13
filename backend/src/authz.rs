@@ -13,6 +13,13 @@ use crate::users::User;
 pub enum Action {
     CreateAccountingBook,
     OpenBook,
+    ListBooks,
+    /// Every reference/ledger operation within an already-open book. v1 has
+    /// no role system yet (that arrives in M6), so — like book creation and
+    /// opening — the only durable authority is the bootstrap owner (Impl
+    /// Spec §5.3). Workflow-scoped, per-book authorization replaces this
+    /// blanket check once roles and workflow deployments exist.
+    BookApi,
     AdminPing,
 }
 
@@ -21,14 +28,18 @@ impl Action {
         match self {
             Action::CreateAccountingBook => "create_accounting_book",
             Action::OpenBook => "open_book",
+            Action::ListBooks => "list_books",
+            Action::BookApi => "book_api",
             Action::AdminPing => "admin_ping",
         }
     }
 }
 
-const OWNER_ACTIONS: [Action; 3] = [
+const OWNER_ACTIONS: [Action; 5] = [
     Action::CreateAccountingBook,
     Action::OpenBook,
+    Action::ListBooks,
+    Action::BookApi,
     Action::AdminPing,
 ];
 

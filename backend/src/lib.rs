@@ -9,6 +9,8 @@ pub mod audit;
 pub mod auth;
 pub mod auth_provider;
 pub mod authz;
+pub mod books;
+pub mod books_api;
 pub mod config;
 pub mod error;
 pub mod sessions;

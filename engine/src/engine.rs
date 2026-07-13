@@ -41,6 +41,14 @@ pub struct NewChart {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CopyChart {
+    pub source_chart_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub activate: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewAccount {
     pub chart_id: Uuid,
     pub name: String,
@@ -110,7 +118,7 @@ pub struct ReverseEntry {
 // Read views
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct BalanceView {
     pub account_id: Uuid,
     pub resource_type_id: Uuid,
@@ -586,6 +594,134 @@ impl AccountingEngine {
                 deactivated_chart_id,
             },
         ))
+    }
+
+    /// Duplicates a chart's accounts under a new chart in the same entity
+    /// (e.g. a proposed chart to review before activating). Parents are
+    /// copied before children so `parent_account_id` remaps to the new
+    /// chart's ids; balances and transaction history are never copied.
+    /// Emits one `ChartCreated` event (the idempotency-tracked event, keyed
+    /// by `op_id`) followed by one `AccountCreated` event per copied
+    /// account.
+    pub fn copy_chart(
+        &mut self,
+        op_id: Uuid,
+        actor: Uuid,
+        spec: CopyChart,
+    ) -> Result<Uuid, EngineError> {
+        let request = json!({ "op": "copy_chart", "spec": spec });
+        if let Some(done) = self.check_idempotency(op_id, &request)? {
+            return Ok(done);
+        }
+        let source = self
+            .state
+            .charts
+            .get(&spec.source_chart_id)
+            .ok_or_else(|| EngineError::invalid_input("unknown source chart"))?
+            .clone();
+        if spec.name.trim().is_empty() {
+            return Err(EngineError::invalid_input("chart name must not be empty"));
+        }
+        if self
+            .state
+            .charts
+            .values()
+            .any(|c| c.entity_id == source.entity_id && c.name == spec.name)
+        {
+            return Err(EngineError::invalid_input(format!(
+                "chart name already exists in entity: {:?}",
+                spec.name
+            )));
+        }
+        let current_active = self
+            .state
+            .charts
+            .values()
+            .find(|c| c.entity_id == source.entity_id && c.is_active)
+            .map(|c| c.chart_id);
+        let is_active = spec.activate || current_active.is_none();
+        let deactivated_chart_id = if spec.activate { current_active } else { None };
+        let new_chart_id = Uuid::new_v4();
+        let new_chart = Chart {
+            chart_id: new_chart_id,
+            entity_id: source.entity_id,
+            name: spec.name,
+            description: spec.description,
+            is_active,
+            created_at: self.clock.now_ms(),
+        };
+
+        // Copy accounts in dependency order (parents before children) so
+        // `parent_account_id` can be remapped to the new chart's own ids.
+        let mut id_map: BTreeMap<Uuid, Uuid> = BTreeMap::new();
+        let mut remaining: Vec<&Account> = self
+            .state
+            .accounts
+            .values()
+            .filter(|a| a.chart_id == spec.source_chart_id)
+            .collect();
+        let mut new_accounts = Vec::new();
+        while !remaining.is_empty() {
+            let before = remaining.len();
+            remaining.retain(|a| {
+                let ready = match a.parent_account_id {
+                    None => true,
+                    Some(parent_id) => id_map.contains_key(&parent_id),
+                };
+                if !ready {
+                    return true;
+                }
+                let new_account_id = Uuid::new_v4();
+                id_map.insert(a.account_id, new_account_id);
+                new_accounts.push(Account {
+                    account_id: new_account_id,
+                    chart_id: new_chart_id,
+                    entity_id: source.entity_id,
+                    name: a.name.clone(),
+                    code: a.code.clone(),
+                    account_type: a.account_type,
+                    normal_balance: a.normal_balance,
+                    resource_type_id: a.resource_type_id,
+                    parent_account_id: a.parent_account_id.map(|parent_id| id_map[&parent_id]),
+                    is_active: a.is_active,
+                    validation_rules: a.validation_rules.clone(),
+                    created_at: self.clock.now_ms(),
+                    metadata: a.metadata.clone(),
+                });
+                false
+            });
+            if remaining.len() == before {
+                // Unreachable in practice: parent_account_id is validated to
+                // stay within one chart at account-creation time, so a cycle
+                // can never form. Guarded here so a future relaxation of that
+                // rule fails loudly instead of looping forever.
+                return Err(EngineError::invalid_input(
+                    "source chart has a cyclic parent_account_id chain",
+                ));
+            }
+        }
+
+        self.record(
+            op_id,
+            actor,
+            request,
+            EventPayload::ChartCreated {
+                chart: new_chart,
+                deactivated_chart_id,
+            },
+        );
+        for account in new_accounts {
+            let sub_request = json!({
+                "op": "copy_chart_account", "chart_id": new_chart_id, "account_id": account.account_id
+            });
+            self.record(
+                Uuid::new_v4(),
+                actor,
+                sub_request,
+                EventPayload::AccountCreated { account },
+            );
+        }
+        Ok(new_chart_id)
     }
 
     pub fn create_account(
@@ -1207,6 +1343,47 @@ impl AccountingEngine {
     }
 
     // -- reads ------------------------------------------------------------------
+
+    pub fn list_entities(&self) -> Vec<&Entity> {
+        self.state.entities.values().collect()
+    }
+
+    pub fn list_resource_types(&self) -> Vec<&ResourceType> {
+        self.state.resource_types.values().collect()
+    }
+
+    pub fn list_charts(&self, entity_id: Uuid) -> Vec<&Chart> {
+        self.state
+            .charts
+            .values()
+            .filter(|c| c.entity_id == entity_id)
+            .collect()
+    }
+
+    pub fn list_accounts(&self, chart_id: Uuid) -> Vec<&Account> {
+        self.state
+            .accounts
+            .values()
+            .filter(|a| a.chart_id == chart_id)
+            .collect()
+    }
+
+    pub fn list_periods(&self, entity_id: Uuid) -> Vec<&Period> {
+        self.state
+            .periods
+            .values()
+            .filter(|p| p.entity_id == entity_id)
+            .collect()
+    }
+
+    /// Latest projected rate per (base, quote) pair (Impl Spec §2.6).
+    pub fn list_prices(&self) -> Vec<&PriceFact> {
+        self.state
+            .prices
+            .values()
+            .map(|entry| &entry.price)
+            .collect()
+    }
 
     pub fn get_entry(&self, entry_id: Uuid) -> Option<&JournalEntry> {
         self.state.entries.get(&entry_id)
