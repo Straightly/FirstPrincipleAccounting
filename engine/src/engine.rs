@@ -126,7 +126,7 @@ pub struct ReverseEntry {
 /// the artifact itself must embed its own `workflow_id` (to build the
 /// `WorkflowContext` on its backend calls) before it is ever deployed, so
 /// the engine cannot be the one to generate it. It is the stable identity
-/// that would survive a future redeployment under the same name (M6+); v1
+/// that would survive a future redeployment under the same name (M7+); v1
 /// has no redeploy path, so it is simply recorded as given.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewWorkflowDeployment {
@@ -1788,6 +1788,29 @@ impl AccountingEngine {
         self.list_workflows(entity_id)
             .into_iter()
             .filter(|w| self.user_has_workflow(user_id, w.workflow_id))
+            .collect()
+    }
+
+    /// The launcher's book/entity picker (Impl Spec §6.5, §7.1, Impl Plan
+    /// M6): every entity in this book where `user_id` holds at least one
+    /// role granting at least one workflow. Distinct from
+    /// `workflows_authorized_for_user`, which is scoped to one already-known
+    /// entity — this is how a non-owner user discovers *which* entity to
+    /// look in without already knowing it.
+    pub fn entities_with_workflows_for_user(&self, user_id: Uuid) -> Vec<Uuid> {
+        self.state
+            .roles
+            .values()
+            .filter(|r| !r.workflow_ids.is_empty())
+            .filter(|r| {
+                self.state
+                    .role_assignments
+                    .get(&r.role_id)
+                    .is_some_and(|users| users.contains(&user_id))
+            })
+            .map(|r| r.entity_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 

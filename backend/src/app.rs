@@ -26,10 +26,15 @@ pub fn build_router(state: SharedState) -> Router {
             "/books",
             get(books_api::list_books).post(books_api::create_book),
         )
+        .route("/books/mine", get(books_api::list_my_books))
         .route("/books/:book_id/open", post(books_api::open_book))
         .route(
             "/books/:book_id/entities",
             get(books_api::list_entities).post(books_api::create_entity),
+        )
+        .route(
+            "/books/:book_id/entities/mine",
+            get(books_api::list_my_entities),
         )
         .route(
             "/books/:book_id/resource-types",

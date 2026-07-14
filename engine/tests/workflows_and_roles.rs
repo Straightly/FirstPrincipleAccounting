@@ -408,3 +408,63 @@ fn authorized_workflow_call_posts_and_preserves_context_on_the_entry() {
         "replay must match incremental state"
     );
 }
+
+#[test]
+fn entities_with_workflows_for_user_backs_the_picker() {
+    let mut fx = fixture();
+    let (_, workflow_id) = deploy_startup_expense(&mut fx);
+    let role_id = fx
+        .engine
+        .list_roles(fx.entity)
+        .into_iter()
+        .find(|r| r.workflow_ids.contains(&workflow_id))
+        .unwrap()
+        .role_id;
+    let employee = Uuid::new_v4();
+    let stranger = Uuid::new_v4();
+
+    assert!(
+        fx.engine
+            .entities_with_workflows_for_user(employee)
+            .is_empty(),
+        "no role assignment yet: nothing to discover"
+    );
+
+    fx.engine
+        .assign_role_to_user(id(), fx.actor, role_id, employee)
+        .unwrap();
+
+    assert_eq!(
+        fx.engine.entities_with_workflows_for_user(employee),
+        vec![fx.entity]
+    );
+    assert!(
+        fx.engine
+            .entities_with_workflows_for_user(stranger)
+            .is_empty(),
+        "a different user's assignment must not leak"
+    );
+
+    // A role with no workflows assigned yet must not count.
+    let empty_role = fx
+        .engine
+        .create_role(
+            id(),
+            fx.actor,
+            NewRole {
+                entity_id: fx.entity,
+                name: "Empty role".into(),
+                description: None,
+            },
+        )
+        .unwrap();
+    fx.engine
+        .assign_role_to_user(id(), fx.actor, empty_role, stranger)
+        .unwrap();
+    assert!(
+        fx.engine
+            .entities_with_workflows_for_user(stranger)
+            .is_empty(),
+        "a role granting zero workflows must not surface the entity"
+    );
+}

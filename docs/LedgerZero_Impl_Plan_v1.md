@@ -18,7 +18,7 @@ Working rules for each milestone:
 
 **Exit criteria:** clean clone builds everything; all (empty) test suites pass. **Met:** `./scripts/check.sh` passes on the user's machine.
 
-**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M10, which now only needs to extend them.
+**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M11, which now only needs to extend them.
 
 ## M1 — Walking skeleton: authentication & authorization ✅ DONE (2026-07-11)
 
@@ -41,7 +41,7 @@ All architectural components stand up here, doing the minimum real work: routing
 - `dev_login` provider for credential-free local development (spec §5.2; must be disabled on any non-local deployment).
 - `GET /api/health` liveness endpoint for basic monitoring (spec §7.1).
 
-**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M10.
+**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M11.
 
 ## M2 — Domain model and engine core (in-memory) — implemented 2026-07-11, exit gate: local `./scripts/check.sh`
 
@@ -102,7 +102,7 @@ Now the skeleton gets its accounting organs: everything behind the M1 auth bound
 
 Combined with what was originally two milestones (a hand-built workflow, then separately its deployment/authorization machinery) at the user's request: the old split meant the workflow would briefly run under stopgap "manual-path authorization" before real workflow-scoped auth replaced it. Building both together means there is never an interim state with weaker authorization than the finished design, and the very first workflow is verifiable end-to-end against real role/deployment checks from the start.
 
-- [x] WorkflowDefinition contract, immutable deployment records, WORKFLOW_DEPLOYMENT events (spec §2.9) — `engine/src/domain.rs::WorkflowDefinition`, `EventPayload::WorkflowDeployed`. `workflow_deployment_id` *and* `workflow_id` are both caller-supplied (not engine-generated): the artifact itself must embed its own `workflow_id` in its JS before it is ever deployed (to build `WorkflowContext` on its calls), so the engine cannot be the one to generate it — the same reasoning that already made `workflow_deployment_id` caller-supplied for the dev-artifact-path reason. `workflow_id` is meant to stay stable across a future redeployment under the same name (M6+); v1 has no redeploy path, so it is simply recorded as given, with a uniqueness check.
+- [x] WorkflowDefinition contract, immutable deployment records, WORKFLOW_DEPLOYMENT events (spec §2.9) — `engine/src/domain.rs::WorkflowDefinition`, `EventPayload::WorkflowDeployed`. `workflow_deployment_id` *and* `workflow_id` are both caller-supplied (not engine-generated): the artifact itself must embed its own `workflow_id` in its JS before it is ever deployed (to build `WorkflowContext` on its calls), so the engine cannot be the one to generate it — the same reasoning that already made `workflow_deployment_id` caller-supplied for the dev-artifact-path reason. `workflow_id` is meant to stay stable across a future redeployment under the same name (M7+); v1 has no redeploy path, so it is simply recorded as given, with a uniqueness check.
 - [x] Dev artifact store layout + hash verification (spec §7.4) — `backend/src/dev_artifacts.rs`: layout `dev_artifacts/workflows/<workflow_deployment_id>/{workflow.json, manifest.json, code/, signatures/}`; SHA-256 over `manifest.json` and over every file directly under `code/` (v1 artifacts are flat — no nested asset folders), covering file names too so a rename changes the hash even with identical bytes. Hashes are computed fresh from disk at deploy time (the identity authority per spec) rather than trusted from a self-declared value in the manifest.
 - [x] Auto-role on deployment; `create_role`, `assign_workflow_to_role`, `assign_role_to_user` as ROLE_ASSIGNMENT events — `engine/src/engine.rs`. `deploy_workflow` is the first engine mutation besides `copy_chart` to emit more than one event in a batch: `WorkflowDeployed` (idempotency-tracked under `workflow_deployment_id`) then `RoleCreated` for the auto-role (fresh internal event id), which starts out containing exactly that one workflow.
 - [x] Complete the M1 authorization framework: workflow-scoped API checks (`backend_api_calls`), execution-context verification (spec §6.5) — `AccountingEngine::authorize_workflow_api` (private, wired into `validate_entry` ahead of the structural/domain invariants, same precedent as idempotency being checked by the caller first): deployment must exist and match the claimed `entity_id`/`workflow_id` (else `INVALID_EXECUTION_CONTEXT`), the requested API must be in `backend_api_calls` (else `UNAUTHORIZED_API`), and the user must hold a role granting the workflow (else `UNAUTHORIZED_WORKFLOW`) — the three error codes M2 had already reserved in the catalog for "later milestones." `post_entry` is the only endpoint wired to accept workflow context in v1 (the one API the sample workflow needs); `NewEntry.workflow: Option<WorkflowContext>` and `JournalEntry.workflow` now actually thread through instead of being hardcoded `None`.
@@ -119,7 +119,24 @@ Combined with what was originally two milestones (a hand-built workflow, then se
 - Hit and fixed one real bug during manual verification: the deployed `frontend_route` initially pointed at `/workflows/<id>/index.html`, but the artifact's files live under `code/` inside the dev-artifact folder — `ServeDir` 404'd because the constructed route skipped that path segment. Fixed to `/workflows/<id>/code/index.html`. A reminder that `./scripts/check.sh` and unit/integration tests don't exercise real static-file serving end-to-end — this class of bug only surfaces by actually running the server and clicking through it, which is why that step is not optional for UI-touching milestones.
 - `copy_chart` (M4) was the first multi-event engine mutation; `deploy_workflow` is the second, establishing the pattern (one idempotency-tracked primary event keyed by the caller-supplied id, followed by fresh-id secondary events) as reusable rather than one-off.
 
-## M6 — AI generation path (MCP + Python dev-time backend)
+## M6 — Book and entity picker (launcher) ✅ DONE (2026-07-14), verified via local `./scripts/check.sh` and a real click-through in the browser (owner and non-owner viewpoints)
+
+M5's workflow menu required pasting raw `book_id`/`entity_id` UUIDs to reach `workflows/mine` — enough to prove workflow-scoped authorization worked, but not something a real non-owner user could do unprompted, and flagged at the time as a known gap rather than an oversight. This milestone closes it with a real bootstrapped picker: the same kind of launcher-native capability as `Open book`/`Adding a workflow` (spec §6.6/§7.1), not a deployed `WorkflowDefinition` artifact.
+
+- [x] Engine: `entities_with_workflows_for_user(user_id) -> Vec<Uuid>` — entities in this book where the user holds at least one workflow-granting role (spec §6.5) — `engine/src/engine.rs`, distinct from `workflows_authorized_for_user` (which needs an entity already picked); this is how the user discovers *which* entity to look in.
+- [x] Backend: `GET /api/books/mine` (`list_my_books`) — the bootstrap owner sees every book, exactly as `list_books` already does; any other signed-in user sees only *currently open* books where `entities_with_workflows_for_user` is non-empty for at least one entity — `backend/src/books_api.rs::list_my_books`, backed by a new `BooksRegistry::list_open()`. No `Action::BookApi` gate: the engine's own role assignments are the authority.
+- [x] Backend: `GET /api/books/:book_id/entities/mine` (`list_my_entities`) — the owner sees every entity in the book, exactly as `list_entities` already does; any other user sees only entities from `entities_with_workflows_for_user` — `backend/src/books_api.rs::list_my_entities`.
+- [x] Launcher: replace the `book_id`/`entity_id` text inputs with cascading pickers (book → entity → workflow) driven by the above, showing names instead of raw UUIDs — `frontend/src/App.jsx`: three `useEffect`s cascade book selection → `entities/mine` → entity selection → `workflows/mine`, rendered as `<select>` dropdowns.
+- [x] Tests: owner sees all books/entities; a role-assigned non-owner sees only their own; a signed-in user with no role assignments anywhere sees an empty picker, not an error — `engine/tests/workflows_and_roles.rs::entities_with_workflows_for_user_backs_the_picker` (incl. a role with zero workflows correctly not surfacing its entity) and `backend/tests/workflows_flow.rs::book_and_entity_picker_scopes_by_role_assignment` (owner/employee/stranger three-way comparison over HTTP) plus an unauthenticated-rejection test.
+
+**Exit criteria:** in a browser, starting from nothing but sign-in, a non-owner user with a role assignment can find and run their workflow without ever typing or pasting a `book_id` or `entity_id`. **Met:** manually verified with two books (one the employee has a role in, one they don't) and two users — logged in as the employee, the book dropdown showed only the one book they're assigned to (the unrelated book never appeared), selecting it populated the entity dropdown with only their entity, and selecting that revealed the "Recording startup expense" link with the correct `book_id`/`entity_id` baked into its `href`; logged in as the owner in the same session, the book dropdown correctly expanded to show both books.
+
+**Notes:**
+
+- Discovery for non-owner users is scoped to *currently open* books only, not every book folder on disk — a book a non-owner is assigned into is only reachable once its owner has opened it (matches the `open_book` model already established in M4; there is no lookup path that would let a non-owner discover an unopened book).
+- No new dependencies; purely additive to M4/M5's existing engine and backend surfaces.
+
+## M7 — AI generation path (MCP + Python dev-time backend)
 
 - [ ] MCP primitives: `generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition` + admin primitives from spec §6.4
 - [ ] Python dev-time backend: LLM wrapping, prompt/context assembly, artifact preparation — no storage credentials, no persisted private context (Axiom 12)
@@ -128,7 +145,7 @@ Combined with what was originally two milestones (a hand-built workflow, then se
 
 **Exit criteria:** a workflow authored by natural language runs in the browser with no hand-edits, or fails with an explicit missing-primitive answer.
 
-## M7 — Periods in practice and reconciliation
+## M8 — Periods in practice and reconciliation
 
 - [ ] `Reconcile bank accounts at EOP` workflow: compare projection vs expected balance, report discrepancies, corrections as new entries, result as administrative event (spec §6.6)
 - [ ] Period close/reopen exercised through workflows; closed-period posting rejected end-to-end
@@ -136,7 +153,7 @@ Combined with what was originally two milestones (a hand-built workflow, then se
 
 **Exit criteria:** full monthly cycle: post, reconcile, close, attempt late post (rejected), reopen, correct, re-close.
 
-## M8 — Export and restore
+## M9 — Export and restore
 
 - [ ] `export_book`: encrypted JSON bundle, reader-passphrase encryption, deployment references + hashes, snapshot cut under writer lock + ledger marker (spec §7.3, §4.3)
 - [ ] `restore_book`: wipe-and-replace, IDs and `book_id` preserved, RESTORE event, unavailable-workflow marking when artifacts don't match by id+hash
@@ -144,7 +161,7 @@ Combined with what was originally two milestones (a hand-built workflow, then se
 
 **Exit criteria:** a book moves to a new folder/deployment and keeps operating.
 
-## M9 — Sub-books and consolidation
+## M10 — Sub-books and consolidation
 
 - [ ] `create_sub_book` with owner choice and copy mode (all / none / owner-only; different owner → none) (spec §2.8)
 - [ ] SUB_BOOK_LINK events in both books; in-file link and rule projections
@@ -153,14 +170,14 @@ Combined with what was originally two milestones (a hand-built workflow, then se
 
 **Exit criteria:** parent book consolidates a child book on one deployment; re-runs create no duplicates.
 
-## M10 — Hardening and deployment
+## M11 — Hardening and deployment
 
 Partially pre-done during M0/M1: `scripts/package.sh` (release tarball) and `docs/LedgerZero_Run_and_Deploy.md` (local run, deployment rehearsal, monitoring signals, remote-deployment caveats) already exist; this milestone extends them.
 
 - [ ] Oracle Cloud VM deployment (systemd or equivalent) and on-premise instructions
 - [ ] MFA guidance, ingress restrictions for non-local deployments (spec §5.5)
 - [ ] Operational docs: bootstrap, open-book, backup/push, ownership transfer (incl. git-history caveat), restore runbook
-- [ ] Full test-suite pass + a scripted demo covering M4–M9 flows
+- [ ] Full test-suite pass + a scripted demo covering M4–M10 flows
 
 **Exit criteria:** a fresh operator can install, bootstrap, and run the demo from docs alone.
 

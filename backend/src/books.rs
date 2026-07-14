@@ -203,6 +203,15 @@ impl BooksRegistry {
                 )
             })
     }
+
+    /// Every currently open book (Impl Plan M6): the picker's discovery
+    /// scope for non-owner users is intentionally limited to books already
+    /// open in this process, not every book folder on disk — a book a
+    /// non-owner is assigned into is only reachable once its owner has
+    /// opened it.
+    pub async fn list_open(&self) -> Vec<Arc<OpenBook>> {
+        self.open.read().await.values().cloned().collect()
+    }
 }
 
 /// Runs a mutation against an open book's engine and, only if it appended

@@ -177,6 +177,32 @@ pub async fn list_books(
     Ok(Json(state.books.list().await?))
 }
 
+/// GET /api/books/mine — the launcher's book picker (Impl Plan M6). The
+/// bootstrap owner sees every book, exactly as `list_books` does; any other
+/// signed-in user sees only *currently open* books where they hold at least
+/// one workflow-granting role in some entity — no `Action::BookApi` gate,
+/// since the engine's own role assignments are the authority here.
+pub async fn list_my_books(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<BookMeta>>, ApiError> {
+    let user = crate::auth::current_user(&state, &headers)?;
+    if state.authz.is_bootstrap_owner(&user) {
+        return Ok(Json(state.books.list().await?));
+    }
+    let mut visible = Vec::new();
+    for open_book in state.books.list_open().await {
+        let engine = open_book.engine.read().await;
+        if !engine
+            .entities_with_workflows_for_user(user.user_id)
+            .is_empty()
+        {
+            visible.push(open_book.meta.clone());
+        }
+    }
+    Ok(Json(visible))
+}
+
 // ---------------------------------------------------------------------------
 // Reference APIs
 // ---------------------------------------------------------------------------
@@ -209,6 +235,32 @@ pub async fn list_entities(
     let (_, open_book) = book_context(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
     Ok(Json(engine.list_entities().into_iter().cloned().collect()))
+}
+
+/// GET /api/books/:book_id/entities/mine — the launcher's entity picker
+/// (Impl Plan M6), the second step after `list_my_books`. The owner sees
+/// every entity in the book, exactly as `list_entities` does; any other
+/// user sees only entities where they hold at least one workflow-granting
+/// role.
+pub async fn list_my_entities(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+) -> Result<Json<Vec<Entity>>, ApiError> {
+    let (user, open_book) = open_book_for_any_user(&state, &headers, book_id).await?;
+    let engine = open_book.engine.read().await;
+    if state.authz.is_bootstrap_owner(&user) {
+        return Ok(Json(engine.list_entities().into_iter().cloned().collect()));
+    }
+    let entity_ids = engine.entities_with_workflows_for_user(user.user_id);
+    Ok(Json(
+        engine
+            .list_entities()
+            .into_iter()
+            .filter(|e| entity_ids.contains(&e.entity_id))
+            .cloned()
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]

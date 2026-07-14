@@ -547,3 +547,121 @@ async fn deploy_workflow_fails_when_artifact_is_missing_from_disk() {
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+/// M6: the launcher's book/entity picker. Deploys a workflow and assigns
+/// its auto-role to an employee, then checks `GET /books/mine` and
+/// `GET /books/:id/entities/mine` from three viewpoints: the owner (sees
+/// everything), the assigned employee (sees only this book/entity), and an
+/// unassigned stranger (sees nothing, not an error).
+#[tokio::test]
+async fn book_and_entity_picker_scopes_by_role_assignment() {
+    let books_dir = tempfile::tempdir().unwrap();
+    let artifacts_dir = tempfile::tempdir().unwrap();
+    let app = app_over(books_dir.path(), artifacts_dir.path());
+    let (owner_cookie, _) = dev_login(&app, OWNER).await;
+    let (book_id, entity_id, _, _) = setup_book(&app, &owner_cookie).await;
+
+    let deployment_id = Uuid::new_v4();
+    write_artifact(artifacts_dir.path(), deployment_id);
+    post(
+        &app,
+        &format!("/api/books/{book_id}/workflows/deploy"),
+        &owner_cookie,
+        json!({
+            "workflow_deployment_id": deployment_id, "workflow_id": Uuid::new_v4(),
+            "entity_id": entity_id,
+            "workflow_name": "Recording startup expense", "description": null,
+            "backend_api_calls": ["post_entry"]
+        }),
+    )
+    .await;
+    let role_id = {
+        let roles = body_json(
+            get(
+                &app,
+                &format!("/api/books/{book_id}/roles?entity_id={entity_id}"),
+                &owner_cookie,
+            )
+            .await,
+        )
+        .await;
+        Uuid::parse_str(roles[0]["role_id"].as_str().unwrap()).unwrap()
+    };
+    let (employee_cookie, employee_id) = dev_login(&app, EMPLOYEE).await;
+    post(
+        &app,
+        &format!("/api/books/{book_id}/roles/{role_id}/users"),
+        &owner_cookie,
+        json!({ "op_id": Uuid::new_v4(), "user_id": employee_id }),
+    )
+    .await;
+    let (stranger_cookie, _) = dev_login(&app, "stranger@example.com").await;
+
+    // Owner: /books/mine matches /books exactly (every book on disk).
+    let owner_books = body_json(get(&app, "/api/books/mine", &owner_cookie).await).await;
+    assert_eq!(owner_books.as_array().unwrap().len(), 1);
+    let owner_entities = body_json(
+        get(
+            &app,
+            &format!("/api/books/{book_id}/entities/mine"),
+            &owner_cookie,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(owner_entities.as_array().unwrap().len(), 1);
+
+    // Employee: sees exactly the one book/entity they were assigned into.
+    let employee_books = body_json(get(&app, "/api/books/mine", &employee_cookie).await).await;
+    let employee_books = employee_books.as_array().unwrap();
+    assert_eq!(employee_books.len(), 1);
+    assert_eq!(employee_books[0]["book_id"], book_id.to_string());
+    let employee_entities = body_json(
+        get(
+            &app,
+            &format!("/api/books/{book_id}/entities/mine"),
+            &employee_cookie,
+        )
+        .await,
+    )
+    .await;
+    let employee_entities = employee_entities.as_array().unwrap();
+    assert_eq!(employee_entities.len(), 1);
+    assert_eq!(employee_entities[0]["entity_id"], entity_id.to_string());
+
+    // Stranger: authenticated, but no role anywhere — empty, not an error.
+    let stranger_books_resp = get(&app, "/api/books/mine", &stranger_cookie).await;
+    assert_eq!(stranger_books_resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(stranger_books_resp)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let stranger_entities_resp = get(
+        &app,
+        &format!("/api/books/{book_id}/entities/mine"),
+        &stranger_cookie,
+    )
+    .await;
+    assert_eq!(stranger_entities_resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(stranger_entities_resp)
+            .await
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn book_and_entity_picker_requires_authentication() {
+    let books_dir = tempfile::tempdir().unwrap();
+    let artifacts_dir = tempfile::tempdir().unwrap();
+    let app = app_over(books_dir.path(), artifacts_dir.path());
+    let response = call(&app, Method::GET, "/api/books/mine", None, None).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}

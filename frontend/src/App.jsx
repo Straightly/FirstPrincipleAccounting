@@ -3,6 +3,9 @@ import { useEffect, useState } from "react";
 // LedgerZero launcher (M1): login, session, identity & authority.
 // M5 adds the workflow menu: every deployed workflow the signed-in user
 // holds a role for, navigating out to each workflow's own standalone route.
+// M6 replaces the M5 book_id/entity_id text inputs with a real bootstrapped
+// picker (book -> entity -> workflow), so a non-owner user with a role
+// assignment never needs to already know a raw book_id or entity_id.
 
 const box = {
   maxWidth: 480,
@@ -30,10 +33,12 @@ export default function App() {
   const [me, setMe] = useState(null);
   const [devEmail, setDevEmail] = useState("");
   const [message, setMessage] = useState("");
-  const [bookId, setBookId] = useState("");
-  const [entityId, setEntityId] = useState("");
+  const [books, setBooks] = useState(null);
+  const [selectedBookId, setSelectedBookId] = useState("");
+  const [entities, setEntities] = useState(null);
+  const [selectedEntityId, setSelectedEntityId] = useState("");
   const [myWorkflows, setMyWorkflows] = useState(null);
-  const [workflowsError, setWorkflowsError] = useState("");
+  const [pickerError, setPickerError] = useState("");
 
   async function loadMe() {
     const r = await api("/api/auth/me");
@@ -83,24 +88,42 @@ export default function App() {
     setMessage("");
   }
 
-  // Workflow menu (Impl Spec §7.1, Impl Plan M5): every deployed workflow
-  // the signed-in user currently holds a role for, in the given book/entity.
-  // No book-browser UI yet (M4 added the book APIs but not this screen) —
-  // the owner tells collaborators the book_id/entity_id to use, matching
-  // this milestone's "intentionally simple" frontend scope (Impl Spec §8.3).
-  async function loadMyWorkflows(e) {
-    e.preventDefault();
-    setWorkflowsError("");
+  // Book/entity picker (Impl Spec §6.5/§7.1, Impl Plan M6): a bootstrapped
+  // launcher capability, the same kind as "Open book"/"Adding a workflow" —
+  // not a deployed workflow artifact. The owner sees every book/entity; any
+  // other signed-in user sees only ones where they hold a workflow-granting
+  // role, discovered purely from server-side role assignments.
+  useEffect(() => {
+    if (!me) return;
+    setPickerError("");
+    api("/api/books/mine").then((r) => {
+      if (r.ok) setBooks(r.body);
+      else setPickerError(`${r.body.error_code}: ${r.body.message}`);
+    });
+  }, [me]);
+
+  useEffect(() => {
+    setEntities(null);
+    setSelectedEntityId("");
+    if (!selectedBookId) return;
+    setPickerError("");
+    api(`/api/books/${selectedBookId}/entities/mine`).then((r) => {
+      if (r.ok) setEntities(r.body);
+      else setPickerError(`${r.body.error_code}: ${r.body.message}`);
+    });
+  }, [selectedBookId]);
+
+  useEffect(() => {
     setMyWorkflows(null);
-    const r = await api(
-      `/api/books/${bookId}/workflows/mine?entity_id=${entityId}`
-    );
-    if (r.ok) {
-      setMyWorkflows(r.body);
-    } else {
-      setWorkflowsError(`${r.body.error_code}: ${r.body.message}`);
-    }
-  }
+    if (!selectedBookId || !selectedEntityId) return;
+    setPickerError("");
+    api(
+      `/api/books/${selectedBookId}/workflows/mine?entity_id=${selectedEntityId}`
+    ).then((r) => {
+      if (r.ok) setMyWorkflows(r.body);
+      else setPickerError(`${r.body.error_code}: ${r.body.message}`);
+    });
+  }, [selectedBookId, selectedEntityId]);
 
   if (authConfig === null) {
     return <div style={box}>Loading…</div>;
@@ -173,24 +196,53 @@ export default function App() {
       {message && <p>{message}</p>}
       <hr />
       <h2 style={{ fontSize: 16 }}>My workflows</h2>
-      <form onSubmit={loadMyWorkflows}>
-        <input
-          placeholder="book_id"
-          value={bookId}
-          onChange={(e) => setBookId(e.target.value)}
-          style={{ padding: 8, width: "45%", marginRight: 4 }}
-        />
-        <input
-          placeholder="entity_id"
-          value={entityId}
-          onChange={(e) => setEntityId(e.target.value)}
-          style={{ padding: 8, width: "45%" }}
-        />
-        <button style={button} type="submit">
-          Show my workflows
-        </button>
-      </form>
-      {workflowsError && <p style={{ color: "#a00" }}>{workflowsError}</p>}
+      {books === null && <p style={{ color: "#666" }}>Loading books…</p>}
+      {books && books.length === 0 && (
+        <p style={{ color: "#666" }}>No books available to you yet.</p>
+      )}
+      {books && books.length > 0 && (
+        <label style={{ display: "block" }}>
+          Book
+          <select
+            value={selectedBookId}
+            onChange={(e) => setSelectedBookId(e.target.value)}
+            style={{ display: "block", padding: 8, width: "100%", marginTop: 4 }}
+          >
+            <option value="">Choose a book…</option>
+            {books.map((b) => (
+              <option key={b.book_id} value={b.book_id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {selectedBookId && entities === null && (
+        <p style={{ color: "#666" }}>Loading entities…</p>
+      )}
+      {entities && entities.length === 0 && (
+        <p style={{ color: "#666" }}>
+          No entities available to you in this book.
+        </p>
+      )}
+      {entities && entities.length > 0 && (
+        <label style={{ display: "block", marginTop: 8 }}>
+          Entity
+          <select
+            value={selectedEntityId}
+            onChange={(e) => setSelectedEntityId(e.target.value)}
+            style={{ display: "block", padding: 8, width: "100%", marginTop: 4 }}
+          >
+            <option value="">Choose an entity…</option>
+            {entities.map((ent) => (
+              <option key={ent.entity_id} value={ent.entity_id}>
+                {ent.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {pickerError && <p style={{ color: "#a00" }}>{pickerError}</p>}
       {myWorkflows && myWorkflows.length === 0 && (
         <p style={{ color: "#666" }}>
           No workflows in this entity are assigned to you.
@@ -201,7 +253,7 @@ export default function App() {
           {myWorkflows.map((w) => (
             <li key={w.workflow_deployment_id}>
               <a
-                href={`${w.frontend_route}?book_id=${bookId}&entity_id=${entityId}`}
+                href={`${w.frontend_route}?book_id=${selectedBookId}&entity_id=${selectedEntityId}`}
               >
                 {w.workflow_name}
               </a>
