@@ -10,6 +10,10 @@ books_dir = "./books"
 # Built frontend launcher assets served by the routing server.
 frontend_dist = "./frontend/dist"
 
+# Dev-time artifact store (spec §7.4) — deployed workflow artifacts, separate
+# from book storage; never contains private accounting context.
+dev_artifacts_dir = "./dev_artifacts"
+
 # Operational audit log (failed auth attempts etc.) — separate from any ledger.
 ops_audit_log = "./ops_audit.jsonl"
 

@@ -48,6 +48,21 @@ async fn book_context(
     Ok((user, open_book))
 }
 
+/// Authenticate and resolve the open book for *any* signed-in user, with no
+/// `Action::BookApi` gate. Used only where the engine itself is the sole
+/// authorization authority — workflow-originated `post_entry` calls and the
+/// "my workflows" launcher menu — matching Impl Spec §6.5: "no capability
+/// tokens... the backend re-checks context against server-side state."
+async fn open_book_for_any_user(
+    state: &SharedState,
+    headers: &HeaderMap,
+    book_id: Uuid,
+) -> Result<(User, Arc<OpenBook>), ApiError> {
+    let user = crate::auth::current_user(state, headers)?;
+    let open_book = state.books.get_open(book_id).await?;
+    Ok((user, open_book))
+}
+
 #[derive(Serialize)]
 pub struct IdResponse {
     pub id: Uuid,
@@ -461,13 +476,21 @@ pub async fn list_periods(
 // Ledger APIs
 // ---------------------------------------------------------------------------
 
+/// POST /api/books/:book_id/entries. When `body.workflow` is present, the
+/// caller need not be the bootstrap owner — the engine's own workflow-scoped
+/// authorization (Impl Spec §6.5) is the sole gate. Otherwise this is the
+/// direct/manual path from M4, unchanged: bootstrap-owner-gated.
 pub async fn post_entry(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Json(body): Json<NewEntry>,
 ) -> Result<Json<IdResponse>, ApiError> {
-    let (user, open_book) = book_context(&state, &headers, book_id).await?;
+    let (user, open_book) = if body.workflow.is_some() {
+        open_book_for_any_user(&state, &headers, book_id).await?
+    } else {
+        book_context(&state, &headers, book_id).await?
+    };
     let id = mutate(&open_book, |engine| engine.post_entry(user.user_id, body)).await?;
     Ok(Json(IdResponse { id }))
 }
@@ -542,4 +565,184 @@ pub async fn list_prices(
     let (_, open_book) = book_context(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
     Ok(Json(engine.list_prices().into_iter().cloned().collect()))
+}
+
+// ---------------------------------------------------------------------------
+// Workflows and roles (Impl Plan M5)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct DeployWorkflowRequest {
+    pub workflow_deployment_id: Uuid,
+    /// Caller-supplied (Impl Spec §2.9): the artifact itself must embed its
+    /// own `workflow_id` before it is deployed, so the engine cannot be the
+    /// one to generate it.
+    pub workflow_id: Uuid,
+    pub entity_id: Uuid,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    pub backend_api_calls: Vec<String>,
+    #[serde(default)]
+    pub required_inputs: serde_json::Value,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+/// POST /api/books/:book_id/workflows/deploy — bootstrap-owner-gated (the
+/// developer is the sole deploy authority in v1, Impl Spec §6.2). Reads the
+/// artifact the caller already wrote to `dev_artifacts_dir` under
+/// `workflow_deployment_id`, hashes it (Impl Spec §7.4 — hashes are the
+/// identity authority), and registers the deployment plus its auto-role.
+pub async fn deploy_workflow(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Json(body): Json<DeployWorkflowRequest>,
+) -> Result<Json<IdResponse>, ApiError> {
+    let (user, open_book) = book_context(&state, &headers, book_id).await?;
+    let dir = crate::dev_artifacts::workflow_dir(
+        &state.config.dev_artifacts_dir,
+        body.workflow_deployment_id,
+    );
+    let hashed = crate::dev_artifacts::hash_artifact(&dir)
+        .await
+        .map_err(ApiError::invalid_input)?;
+    let spec = NewWorkflowDeployment {
+        workflow_deployment_id: body.workflow_deployment_id,
+        workflow_id: body.workflow_id,
+        entity_id: body.entity_id,
+        workflow_name: body.workflow_name,
+        description: body.description,
+        artifact_id: body.workflow_deployment_id,
+        dev_artifact_path: dir.to_string_lossy().into_owned(),
+        manifest_hash: hashed.manifest_hash,
+        code_hash: hashed.code_hash,
+        frontend_route: format!("/workflows/{}/code/index.html", body.workflow_deployment_id),
+        backend_api_calls: body.backend_api_calls,
+        required_inputs: body.required_inputs,
+        metadata: body.metadata,
+    };
+    let id = mutate(&open_book, |engine| {
+        engine.deploy_workflow(user.user_id, spec)
+    })
+    .await?;
+    Ok(Json(IdResponse { id }))
+}
+
+/// GET /api/books/:book_id/workflows — every deployed workflow in the
+/// entity (admin view; owner-gated).
+pub async fn list_workflows(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Query(filter): Query<EntityFilter>,
+) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
+    let (_, open_book) = book_context(&state, &headers, book_id).await?;
+    let engine = open_book.engine.read().await;
+    Ok(Json(
+        engine
+            .list_workflows(filter.entity_id)
+            .into_iter()
+            .cloned()
+            .collect(),
+    ))
+}
+
+/// GET /api/books/:book_id/workflows/mine — the launcher's workflow menu
+/// (Impl Spec §7.1): every workflow in the entity the current user actually
+/// holds a role for. Any signed-in user, not just the owner — this is the
+/// read-side counterpart of the workflow-scoped `post_entry` path.
+pub async fn my_workflows(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Query(filter): Query<EntityFilter>,
+) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
+    let (user, open_book) = open_book_for_any_user(&state, &headers, book_id).await?;
+    let engine = open_book.engine.read().await;
+    Ok(Json(
+        engine
+            .workflows_authorized_for_user(user.user_id, filter.entity_id)
+            .into_iter()
+            .cloned()
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct CreateRoleRequest {
+    pub op_id: Uuid,
+    #[serde(flatten)]
+    pub spec: NewRole,
+}
+
+pub async fn create_role(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Json(body): Json<CreateRoleRequest>,
+) -> Result<Json<IdResponse>, ApiError> {
+    let (user, open_book) = book_context(&state, &headers, book_id).await?;
+    let id = mutate(&open_book, |engine| {
+        engine.create_role(body.op_id, user.user_id, body.spec)
+    })
+    .await?;
+    Ok(Json(IdResponse { id }))
+}
+
+pub async fn list_roles(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Query(filter): Query<EntityFilter>,
+) -> Result<Json<Vec<Role>>, ApiError> {
+    let (_, open_book) = book_context(&state, &headers, book_id).await?;
+    let engine = open_book.engine.read().await;
+    Ok(Json(
+        engine
+            .list_roles(filter.entity_id)
+            .into_iter()
+            .cloned()
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct AssignWorkflowToRoleRequest {
+    pub op_id: Uuid,
+    pub workflow_id: Uuid,
+}
+
+pub async fn assign_workflow_to_role(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path((book_id, role_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<AssignWorkflowToRoleRequest>,
+) -> Result<Json<IdResponse>, ApiError> {
+    let (user, open_book) = book_context(&state, &headers, book_id).await?;
+    let id = mutate(&open_book, |engine| {
+        engine.assign_workflow_to_role(body.op_id, user.user_id, role_id, body.workflow_id)
+    })
+    .await?;
+    Ok(Json(IdResponse { id }))
+}
+
+#[derive(Deserialize)]
+pub struct AssignRoleToUserRequest {
+    pub op_id: Uuid,
+    pub user_id: Uuid,
+}
+
+pub async fn assign_role_to_user(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path((book_id, role_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<AssignRoleToUserRequest>,
+) -> Result<Json<IdResponse>, ApiError> {
+    let (user, open_book) = book_context(&state, &headers, book_id).await?;
+    let id = mutate(&open_book, |engine| {
+        engine.assign_role_to_user(body.op_id, user.user_id, role_id, body.user_id)
+    })
+    .await?;
+    Ok(Json(IdResponse { id }))
 }

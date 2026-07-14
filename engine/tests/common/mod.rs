@@ -218,6 +218,7 @@ impl Fx {
             prices: Vec::new(),
             source: EntrySource::Manual,
             metadata: Value::Null,
+            workflow: None,
         }
     }
 

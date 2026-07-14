@@ -46,6 +46,11 @@ pub struct ServerConfig {
     pub listen_addr: String,
     pub books_dir: String,
     pub frontend_dist: String,
+    /// Dev-time artifact store (Impl Spec §7.4) — separate from book
+    /// storage; holds deployed workflow artifacts, never private
+    /// accounting context.
+    #[serde(default = "default_dev_artifacts_dir")]
+    pub dev_artifacts_dir: String,
     pub ops_audit_log: String,
     /// On a fresh install, only this authenticated identity may create or open
     /// books and reach owner-gated endpoints (Impl Spec §5.3).
@@ -62,6 +67,10 @@ pub struct ServerConfig {
 
 fn default_session_ttl() -> u64 {
     3600
+}
+
+fn default_dev_artifacts_dir() -> String {
+    "./dev_artifacts".to_string()
 }
 
 impl ServerConfig {

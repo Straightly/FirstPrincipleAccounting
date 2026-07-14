@@ -83,14 +83,42 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/books/:book_id/prices",
             get(books_api::list_prices).post(books_api::record_price),
+        )
+        .route("/books/:book_id/workflows", get(books_api::list_workflows))
+        .route(
+            "/books/:book_id/workflows/mine",
+            get(books_api::my_workflows),
+        )
+        .route(
+            "/books/:book_id/workflows/deploy",
+            post(books_api::deploy_workflow),
+        )
+        .route(
+            "/books/:book_id/roles",
+            get(books_api::list_roles).post(books_api::create_role),
+        )
+        .route(
+            "/books/:book_id/roles/:role_id/workflows",
+            post(books_api::assign_workflow_to_role),
+        )
+        .route(
+            "/books/:book_id/roles/:role_id/users",
+            post(books_api::assign_role_to_user),
         );
 
     let dist = state.config.frontend_dist.clone();
     let index = Path::new(&dist).join("index.html");
     let static_service = ServeDir::new(&dist).not_found_service(ServeFile::new(index));
 
+    // Deployed workflow artifacts (Impl Spec §7.1, §7.4): static assets only
+    // — authorization happens at the backend API calls the artifact makes,
+    // not at the point of fetching its own HTML/JS.
+    let workflows_dir = Path::new(&state.config.dev_artifacts_dir).join("workflows");
+    let workflows_service = ServeDir::new(&workflows_dir);
+
     Router::new()
         .nest("/api", api)
+        .nest_service("/workflows", workflows_service)
         .with_state(state)
         .fallback_service(static_service)
 }

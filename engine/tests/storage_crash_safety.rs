@@ -251,6 +251,7 @@ async fn property_lite_persist_reopen_cycles() {
                 prices: Vec::new(),
                 source: EntrySource::Manual,
                 metadata: Value::Null,
+                workflow: None,
             };
             fx.engine.post_entry(fx.actor, entry).unwrap();
         }

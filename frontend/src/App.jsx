@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
 // LedgerZero launcher (M1): login, session, identity & authority.
-// The workflow menu appears here from M5 on.
+// M5 adds the workflow menu: every deployed workflow the signed-in user
+// holds a role for, navigating out to each workflow's own standalone route.
 
 const box = {
   maxWidth: 480,
@@ -29,6 +30,10 @@ export default function App() {
   const [me, setMe] = useState(null);
   const [devEmail, setDevEmail] = useState("");
   const [message, setMessage] = useState("");
+  const [bookId, setBookId] = useState("");
+  const [entityId, setEntityId] = useState("");
+  const [myWorkflows, setMyWorkflows] = useState(null);
+  const [workflowsError, setWorkflowsError] = useState("");
 
   async function loadMe() {
     const r = await api("/api/auth/me");
@@ -76,6 +81,25 @@ export default function App() {
     await api("/api/auth/logout", { method: "POST" });
     setMe(null);
     setMessage("");
+  }
+
+  // Workflow menu (Impl Spec §7.1, Impl Plan M5): every deployed workflow
+  // the signed-in user currently holds a role for, in the given book/entity.
+  // No book-browser UI yet (M4 added the book APIs but not this screen) —
+  // the owner tells collaborators the book_id/entity_id to use, matching
+  // this milestone's "intentionally simple" frontend scope (Impl Spec §8.3).
+  async function loadMyWorkflows(e) {
+    e.preventDefault();
+    setWorkflowsError("");
+    setMyWorkflows(null);
+    const r = await api(
+      `/api/books/${bookId}/workflows/mine?entity_id=${entityId}`
+    );
+    if (r.ok) {
+      setMyWorkflows(r.body);
+    } else {
+      setWorkflowsError(`${r.body.error_code}: ${r.body.message}`);
+    }
   }
 
   if (authConfig === null) {
@@ -148,7 +172,43 @@ export default function App() {
       </button>
       {message && <p>{message}</p>}
       <hr />
-      <p style={{ color: "#666" }}>Workflow menu arrives in milestone M5.</p>
+      <h2 style={{ fontSize: 16 }}>My workflows</h2>
+      <form onSubmit={loadMyWorkflows}>
+        <input
+          placeholder="book_id"
+          value={bookId}
+          onChange={(e) => setBookId(e.target.value)}
+          style={{ padding: 8, width: "45%", marginRight: 4 }}
+        />
+        <input
+          placeholder="entity_id"
+          value={entityId}
+          onChange={(e) => setEntityId(e.target.value)}
+          style={{ padding: 8, width: "45%" }}
+        />
+        <button style={button} type="submit">
+          Show my workflows
+        </button>
+      </form>
+      {workflowsError && <p style={{ color: "#a00" }}>{workflowsError}</p>}
+      {myWorkflows && myWorkflows.length === 0 && (
+        <p style={{ color: "#666" }}>
+          No workflows in this entity are assigned to you.
+        </p>
+      )}
+      {myWorkflows && myWorkflows.length > 0 && (
+        <ul>
+          {myWorkflows.map((w) => (
+            <li key={w.workflow_deployment_id}>
+              <a
+                href={`${w.frontend_route}?book_id=${bookId}&entity_id=${entityId}`}
+              >
+                {w.workflow_name}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

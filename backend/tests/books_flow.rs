@@ -21,6 +21,7 @@ fn test_config(books_dir: &std::path::Path) -> ServerConfig {
         listen_addr: "127.0.0.1:0".to_string(),
         books_dir: books_dir.to_string_lossy().to_string(),
         frontend_dist: "./nonexistent-dist".to_string(),
+        dev_artifacts_dir: "./nonexistent-dev-artifacts".to_string(),
         ops_audit_log: audit_path.to_string_lossy().to_string(),
         bootstrap_owner_email: OWNER.to_string(),
         session_ttl_seconds: 3600,

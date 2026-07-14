@@ -101,6 +101,11 @@ pub struct NewEntry {
     pub source: EntrySource,
     #[serde(default)]
     pub metadata: Value,
+    /// Present only for workflow-originated calls (Impl Spec §6.5): the
+    /// engine re-checks execution context and workflow-scoped authorization
+    /// against it before posting. `None` is the direct/manual path.
+    #[serde(default)]
+    pub workflow: Option<WorkflowContext>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -112,6 +117,41 @@ pub struct ReverseEntry {
     pub description: Option<String>,
     #[serde(default)]
     pub metadata: Value,
+}
+
+/// Impl Spec §2.9, §7.4. `workflow_deployment_id` is caller-supplied (it
+/// names the dev artifact store folder the caller already wrote to disk
+/// before deploying, per §7.4) and doubles as the idempotency key, the same
+/// pattern `NewEntry::entry_id` uses. `workflow_id` is also caller-supplied:
+/// the artifact itself must embed its own `workflow_id` (to build the
+/// `WorkflowContext` on its backend calls) before it is ever deployed, so
+/// the engine cannot be the one to generate it. It is the stable identity
+/// that would survive a future redeployment under the same name (M6+); v1
+/// has no redeploy path, so it is simply recorded as given.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NewWorkflowDeployment {
+    pub workflow_deployment_id: Uuid,
+    pub workflow_id: Uuid,
+    pub entity_id: Uuid,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    pub artifact_id: Uuid,
+    pub dev_artifact_path: String,
+    pub manifest_hash: String,
+    pub code_hash: String,
+    pub frontend_route: String,
+    pub backend_api_calls: Vec<String>,
+    #[serde(default)]
+    pub required_inputs: Value,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NewRole {
+    pub entity_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +247,11 @@ pub struct EngineState {
     balances: BTreeMap<Uuid, AccountBalance>,
     prices: BTreeMap<(Uuid, Uuid), PriceProjectionEntry>,
     idempotency: BTreeMap<Uuid, IdempotencyRecord>,
+    /// Keyed by `workflow_deployment_id` (Impl Spec §2.9).
+    workflows: BTreeMap<Uuid, WorkflowDefinition>,
+    roles: BTreeMap<Uuid, Role>,
+    /// `role_id -> assigned user_ids` (Impl Spec §6.1).
+    role_assignments: BTreeMap<Uuid, std::collections::BTreeSet<Uuid>>,
 }
 
 impl EngineState {
@@ -223,6 +268,9 @@ impl EngineState {
             balances: BTreeMap::new(),
             prices: BTreeMap::new(),
             idempotency: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            roles: BTreeMap::new(),
+            role_assignments: BTreeMap::new(),
         }
     }
 
@@ -338,6 +386,27 @@ impl EngineState {
                     Self::project_price(&mut self.prices, price, seq);
                 }
                 self.entries.insert(entry.entry_id, entry.clone());
+            }
+            EventPayload::WorkflowDeployed { definition } => {
+                self.workflows
+                    .insert(definition.workflow_deployment_id, definition.clone());
+            }
+            EventPayload::RoleCreated { role } => {
+                self.roles.insert(role.role_id, role.clone());
+            }
+            EventPayload::WorkflowAssignedToRole {
+                role_id,
+                workflow_id,
+            } => {
+                if let Some(role) = self.roles.get_mut(role_id) {
+                    role.workflow_ids.push(*workflow_id);
+                }
+            }
+            EventPayload::RoleAssignedToUser { role_id, user_id } => {
+                self.role_assignments
+                    .entry(*role_id)
+                    .or_default()
+                    .insert(*user_id);
             }
         }
         self.log.push(record);
@@ -985,6 +1054,288 @@ impl AccountingEngine {
         Ok(self.record(op_id, actor, request, EventPayload::PriceRecorded { price }))
     }
 
+    // -- workflows and roles ---------------------------------------------------
+
+    /// Registers an immutable deployment record and auto-creates its
+    /// same-named role containing exactly that workflow (Impl Spec §6.1).
+    /// One mutation batch, two events: `WorkflowDeployed` (idempotency-
+    /// tracked under `spec.workflow_deployment_id`) then `RoleCreated`
+    /// (fresh internal event id, like `copy_chart`'s per-account events).
+    pub fn deploy_workflow(
+        &mut self,
+        actor: Uuid,
+        spec: NewWorkflowDeployment,
+    ) -> Result<Uuid, EngineError> {
+        let request = json!({ "op": "deploy_workflow", "spec": spec });
+        if let Some(done) = self.check_idempotency(spec.workflow_deployment_id, &request)? {
+            return Ok(done);
+        }
+        if !self.state.entities.contains_key(&spec.entity_id) {
+            return Err(EngineError::invalid_input("unknown entity"));
+        }
+        if spec.workflow_name.trim().is_empty() {
+            return Err(EngineError::invalid_input(
+                "workflow_name must not be empty",
+            ));
+        }
+        if spec.backend_api_calls.is_empty() {
+            return Err(EngineError::invalid_input(
+                "backend_api_calls must list at least one permitted API",
+            ));
+        }
+        if self
+            .state
+            .workflows
+            .values()
+            .any(|w| w.entity_id == spec.entity_id && w.workflow_name == spec.workflow_name)
+        {
+            return Err(EngineError::invalid_input(format!(
+                "workflow name already deployed in entity: {:?}",
+                spec.workflow_name
+            )));
+        }
+        if self
+            .state
+            .roles
+            .values()
+            .any(|r| r.entity_id == spec.entity_id && r.name == spec.workflow_name)
+        {
+            return Err(EngineError::invalid_input(format!(
+                "a role named {:?} already exists in entity (collides with the auto-role)",
+                spec.workflow_name
+            )));
+        }
+        if self
+            .state
+            .workflows
+            .values()
+            .any(|w| w.workflow_id == spec.workflow_id)
+        {
+            return Err(EngineError::invalid_input(
+                "workflow_id is already in use by another deployment",
+            ));
+        }
+
+        let workflow_id = spec.workflow_id;
+        let definition = WorkflowDefinition {
+            workflow_deployment_id: spec.workflow_deployment_id,
+            workflow_id,
+            entity_id: spec.entity_id,
+            workflow_name: spec.workflow_name.clone(),
+            description: spec.description,
+            artifact_id: spec.artifact_id,
+            dev_artifact_path: spec.dev_artifact_path,
+            manifest_hash: spec.manifest_hash,
+            code_hash: spec.code_hash,
+            frontend_route: spec.frontend_route,
+            backend_api_calls: spec.backend_api_calls,
+            required_inputs: spec.required_inputs,
+            deployed_by: actor,
+            deployed_at: self.clock.now_ms(),
+            metadata: spec.metadata,
+        };
+        self.record(
+            spec.workflow_deployment_id,
+            actor,
+            request,
+            EventPayload::WorkflowDeployed { definition },
+        );
+
+        let role = Role {
+            role_id: Uuid::new_v4(),
+            entity_id: spec.entity_id,
+            name: spec.workflow_name,
+            description: None,
+            workflow_ids: vec![workflow_id],
+            created_at: self.clock.now_ms(),
+        };
+        self.record(
+            Uuid::new_v4(),
+            actor,
+            json!({ "op": "auto_role", "workflow_id": workflow_id }),
+            EventPayload::RoleCreated { role },
+        );
+
+        Ok(spec.workflow_deployment_id)
+    }
+
+    pub fn create_role(
+        &mut self,
+        op_id: Uuid,
+        actor: Uuid,
+        spec: NewRole,
+    ) -> Result<Uuid, EngineError> {
+        let request = json!({ "op": "create_role", "spec": spec });
+        if let Some(done) = self.check_idempotency(op_id, &request)? {
+            return Ok(done);
+        }
+        if !self.state.entities.contains_key(&spec.entity_id) {
+            return Err(EngineError::invalid_input("unknown entity"));
+        }
+        if spec.name.trim().is_empty() {
+            return Err(EngineError::invalid_input("role name must not be empty"));
+        }
+        if self
+            .state
+            .roles
+            .values()
+            .any(|r| r.entity_id == spec.entity_id && r.name == spec.name)
+        {
+            return Err(EngineError::invalid_input(format!(
+                "role name already exists in entity: {:?}",
+                spec.name
+            )));
+        }
+        let role = Role {
+            role_id: Uuid::new_v4(),
+            entity_id: spec.entity_id,
+            name: spec.name,
+            description: spec.description,
+            workflow_ids: Vec::new(),
+            created_at: self.clock.now_ms(),
+        };
+        Ok(self.record(op_id, actor, request, EventPayload::RoleCreated { role }))
+    }
+
+    pub fn assign_workflow_to_role(
+        &mut self,
+        op_id: Uuid,
+        actor: Uuid,
+        role_id: Uuid,
+        workflow_id: Uuid,
+    ) -> Result<Uuid, EngineError> {
+        let request = json!({
+            "op": "assign_workflow_to_role", "role_id": role_id, "workflow_id": workflow_id
+        });
+        if let Some(done) = self.check_idempotency(op_id, &request)? {
+            return Ok(done);
+        }
+        let role = self
+            .state
+            .roles
+            .get(&role_id)
+            .ok_or_else(|| EngineError::invalid_input("unknown role"))?;
+        if !self
+            .state
+            .workflows
+            .values()
+            .any(|w| w.workflow_id == workflow_id)
+        {
+            return Err(EngineError::invalid_input("unknown workflow"));
+        }
+        if role.workflow_ids.contains(&workflow_id) {
+            return Err(EngineError::invalid_input(
+                "workflow is already assigned to this role",
+            ));
+        }
+        Ok(self.record(
+            op_id,
+            actor,
+            request,
+            EventPayload::WorkflowAssignedToRole {
+                role_id,
+                workflow_id,
+            },
+        ))
+    }
+
+    pub fn assign_role_to_user(
+        &mut self,
+        op_id: Uuid,
+        actor: Uuid,
+        role_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Uuid, EngineError> {
+        let request =
+            json!({ "op": "assign_role_to_user", "role_id": role_id, "user_id": user_id });
+        if let Some(done) = self.check_idempotency(op_id, &request)? {
+            return Ok(done);
+        }
+        if !self.state.roles.contains_key(&role_id) {
+            return Err(EngineError::invalid_input("unknown role"));
+        }
+        if self
+            .state
+            .role_assignments
+            .get(&role_id)
+            .is_some_and(|users| users.contains(&user_id))
+        {
+            return Err(EngineError::invalid_input(
+                "user is already assigned to this role",
+            ));
+        }
+        Ok(self.record(
+            op_id,
+            actor,
+            request,
+            EventPayload::RoleAssignedToUser { role_id, user_id },
+        ))
+    }
+
+    /// True if any role granting `workflow_id` is assigned to `user_id`.
+    fn user_has_workflow(&self, user_id: Uuid, workflow_id: Uuid) -> bool {
+        self.state
+            .roles
+            .values()
+            .filter(|r| r.workflow_ids.contains(&workflow_id))
+            .any(|r| {
+                self.state
+                    .role_assignments
+                    .get(&r.role_id)
+                    .is_some_and(|users| users.contains(&user_id))
+            })
+    }
+
+    /// Workflow-scoped authorization and execution-context verification
+    /// (Impl Spec §6.5, §4.1.5): the deployment must exist and match the
+    /// claimed `entity_id`/`workflow_id`, the requested `api_name` must be
+    /// in its `backend_api_calls`, and `user_id` must hold a role granting
+    /// this workflow. No capability tokens — every field is re-checked
+    /// against server-side state on every call.
+    fn authorize_workflow_api(
+        &self,
+        user_id: Uuid,
+        entity_id: Uuid,
+        ctx: &WorkflowContext,
+        api_name: &str,
+    ) -> Result<(), EngineError> {
+        let definition = self
+            .state
+            .workflows
+            .get(&ctx.workflow_deployment_id)
+            .ok_or_else(|| {
+                EngineError::new(
+                    ErrorCode::InvalidExecutionContext,
+                    "unknown workflow_deployment_id",
+                )
+            })?;
+        if definition.workflow_id != ctx.workflow_id || definition.entity_id != entity_id {
+            return Err(EngineError::new(
+                ErrorCode::InvalidExecutionContext,
+                "execution context does not match the deployed workflow",
+            ));
+        }
+        if ctx.workflow_execution_id.is_nil() {
+            return Err(EngineError::invalid_input(
+                "workflow_execution_id must not be nil",
+            ));
+        }
+        if !definition.backend_api_calls.iter().any(|a| a == api_name) {
+            return Err(EngineError::with_details(
+                ErrorCode::UnauthorizedApi,
+                "workflow deployment does not permit this backend API",
+                json!({ "api": api_name }),
+            ));
+        }
+        if !self.user_has_workflow(user_id, definition.workflow_id) {
+            return Err(EngineError::new(
+                ErrorCode::UnauthorizedWorkflow,
+                "user is not assigned a role granting this workflow",
+            ));
+        }
+        Ok(())
+    }
+
     // -- posting --------------------------------------------------------------
 
     /// Post-or-reject (Impl Spec §2.4, §4.1). On success the entry is an
@@ -1047,6 +1398,7 @@ impl AccountingEngine {
             prices: original.prices.clone(),
             source: EntrySource::Manual,
             metadata: spec.metadata,
+            workflow: None,
         };
         let mut entry = self.validate_entry(actor, &new)?;
         entry.reversal_of = Some(spec.original_entry_id);
@@ -1089,6 +1441,15 @@ impl AccountingEngine {
     /// context checks — §4.1.5 — arrive with workflow machinery in M5;
     /// idempotency — §4.1.6 — is checked by the caller before this runs.)
     fn validate_entry(&self, actor: Uuid, new: &NewEntry) -> Result<JournalEntry, EngineError> {
+        // Workflow-scoped authorization and execution-context verification
+        // (§4.1.5) — only for workflow-originated calls (`new.workflow` is
+        // `Some`); the direct/manual path (`None`) is unaffected. Checked
+        // ahead of the structural/domain invariants below, matching the
+        // established precedent that idempotency (§4.1.6) is also checked
+        // by the caller before any of this runs.
+        if let Some(ctx) = &new.workflow {
+            self.authorize_workflow_api(actor, new.entity_id, ctx, "post_entry")?;
+        }
         // Structural (INVALID_INPUT).
         if new.description.trim().is_empty() {
             return Err(EngineError::invalid_input("description is required"));
@@ -1259,7 +1620,7 @@ impl AccountingEngine {
             entry_date: new.entry_date.clone(),
             posted_at: self.clock.now_ms(),
             posted_by: actor,
-            workflow: None,
+            workflow: new.workflow.clone(),
             event_type: EventType::Accounting,
             description: new.description.clone(),
             reversal_of: None,
@@ -1382,6 +1743,51 @@ impl AccountingEngine {
             .prices
             .values()
             .map(|entry| &entry.price)
+            .collect()
+    }
+
+    pub fn get_workflow(&self, workflow_deployment_id: Uuid) -> Option<&WorkflowDefinition> {
+        self.state.workflows.get(&workflow_deployment_id)
+    }
+
+    pub fn list_workflows(&self, entity_id: Uuid) -> Vec<&WorkflowDefinition> {
+        self.state
+            .workflows
+            .values()
+            .filter(|w| w.entity_id == entity_id)
+            .collect()
+    }
+
+    pub fn get_role(&self, role_id: Uuid) -> Option<&Role> {
+        self.state.roles.get(&role_id)
+    }
+
+    pub fn list_roles(&self, entity_id: Uuid) -> Vec<&Role> {
+        self.state
+            .roles
+            .values()
+            .filter(|r| r.entity_id == entity_id)
+            .collect()
+    }
+
+    pub fn list_role_assignments(&self, role_id: Uuid) -> Vec<Uuid> {
+        self.state
+            .role_assignments
+            .get(&role_id)
+            .map(|users| users.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// The launcher's workflow menu (Impl Spec §7.1): every deployed
+    /// workflow in the entity that `user_id` currently holds a role for.
+    pub fn workflows_authorized_for_user(
+        &self,
+        user_id: Uuid,
+        entity_id: Uuid,
+    ) -> Vec<&WorkflowDefinition> {
+        self.list_workflows(entity_id)
+            .into_iter()
+            .filter(|w| self.user_has_workflow(user_id, w.workflow_id))
             .collect()
     }
 
@@ -1603,6 +2009,7 @@ impl AccountingEngine {
                 prices: entry.prices.clone(),
                 source: entry.source,
                 metadata: entry.metadata.clone(),
+                workflow: entry.workflow.clone(),
             };
             self.check_balance(&as_new)?;
         }

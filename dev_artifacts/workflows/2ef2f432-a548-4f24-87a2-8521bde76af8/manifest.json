@@ -1,0 +1,8 @@
+{
+  "workflow_deployment_id": "2ef2f432-a548-4f24-87a2-8521bde76af8",
+  "workflow_id": "5230b634-7ad9-46fa-a069-979e6c658eb3",
+  "generator": "hand-written",
+  "generated_by": "developer (Impl Plan M5 reference artifact)",
+  "code_files": ["index.html", "app.js", "react.production.min.js", "react-dom.production.min.js"],
+  "notes": "manifest_hash/code_hash are computed fresh from these files at deploy time (Impl Spec §7.4) — this manifest does not declare its own hash."
+}

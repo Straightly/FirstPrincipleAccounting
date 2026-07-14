@@ -182,6 +182,50 @@ pub struct WorkflowContext {
     pub workflow_execution_id: Uuid,
 }
 
+/// Impl Spec §2.9 / §2.2.5 — the minimum v1 `WorkflowDefinition` contract.
+/// `workflow_id` is stable across redeployments of the same
+/// `(entity_id, workflow_name)`; `workflow_deployment_id` is the immutable
+/// per-deployment record every historical `JournalEntry` keeps a reference
+/// to, so generated (or hand-written) code stays auditable even though there
+/// is no user-facing workflow versioning (Impl Spec §2.2.5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowDefinition {
+    pub workflow_deployment_id: Uuid,
+    pub workflow_id: Uuid,
+    pub entity_id: Uuid,
+    pub workflow_name: String,
+    pub description: Option<String>,
+    /// Dev artifact store identifier (Impl Spec §7.4); immutable per artifact.
+    pub artifact_id: Uuid,
+    /// Locator only — `manifest_hash`/`code_hash` are the identity authority.
+    pub dev_artifact_path: String,
+    pub manifest_hash: String,
+    pub code_hash: String,
+    /// Route (or artifact path) the frontend serves for this deployment.
+    pub frontend_route: String,
+    /// Backend operations this deployment may invoke (Impl Spec §6.5); the
+    /// engine rejects any workflow-originated call whose API isn't listed.
+    pub backend_api_calls: Vec<String>,
+    pub required_inputs: serde_json::Value,
+    pub deployed_by: Uuid,
+    pub deployed_at: TimestampMs,
+    pub metadata: serde_json::Value,
+}
+
+/// Impl Spec §2.9 — a named collection of workflows within an entity; no
+/// role hierarchy. Deploying a workflow auto-creates (Impl Spec §6.1) a role
+/// of the same name containing exactly that workflow; additional composite
+/// roles may be created freely.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Role {
+    pub role_id: Uuid,
+    pub entity_id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub workflow_ids: Vec<Uuid>,
+    pub created_at: TimestampMs,
+}
+
 /// Impl Spec §2.5. Amounts are always denominated in the account's own
 /// resource unit; exactly one of debit/credit is set, each `>= 0`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,6 +312,23 @@ pub enum EventPayload {
     EntryPosted {
         entry: JournalEntry,
     },
+    /// Impl Spec §2.9, §6.1 — an immutable deployment record. Auto-creates
+    /// the same-named role via a following `RoleCreated` event in the same
+    /// mutation batch.
+    WorkflowDeployed {
+        definition: WorkflowDefinition,
+    },
+    RoleCreated {
+        role: Role,
+    },
+    WorkflowAssignedToRole {
+        role_id: Uuid,
+        workflow_id: Uuid,
+    },
+    RoleAssignedToUser {
+        role_id: Uuid,
+        user_id: Uuid,
+    },
 }
 
 impl EventPayload {
@@ -283,6 +344,10 @@ impl EventPayload {
             EventPayload::PeriodStatusChanged { .. } => EventType::PeriodStatus,
             EventPayload::PriceRecorded { .. } => EventType::Price,
             EventPayload::EntryPosted { entry } => entry.event_type,
+            EventPayload::WorkflowDeployed { .. } => EventType::WorkflowDeployment,
+            EventPayload::RoleCreated { .. }
+            | EventPayload::WorkflowAssignedToRole { .. }
+            | EventPayload::RoleAssignedToUser { .. } => EventType::RoleAssignment,
         }
     }
 
@@ -300,6 +365,10 @@ impl EventPayload {
             EventPayload::PeriodStatusChanged { period_id, .. } => *period_id,
             EventPayload::PriceRecorded { .. } => Uuid::nil(),
             EventPayload::EntryPosted { entry } => entry.entry_id,
+            EventPayload::WorkflowDeployed { definition } => definition.workflow_deployment_id,
+            EventPayload::RoleCreated { role } => role.role_id,
+            EventPayload::WorkflowAssignedToRole { role_id, .. } => *role_id,
+            EventPayload::RoleAssignedToUser { role_id, .. } => *role_id,
         }
     }
 }

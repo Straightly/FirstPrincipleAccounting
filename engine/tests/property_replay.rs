@@ -106,6 +106,7 @@ fn gen_valid_single_unit(rng: &mut Rng, fx: &Fx) -> NewEntry {
         prices: Vec::new(),
         source: EntrySource::Manual,
         metadata: Value::Null,
+        workflow: None,
     }
 }
 
@@ -134,6 +135,7 @@ fn gen_valid_cross_unit(rng: &mut Rng, fx: &Fx) -> NewEntry {
         }],
         source: EntrySource::Manual,
         metadata: Value::Null,
+        workflow: None,
     }
 }
 
@@ -211,6 +213,7 @@ fn run_sequence(seed: u64, ops: usize) {
                 prices: Vec::new(),
                 source: EntrySource::Manual,
                 metadata: Value::Null,
+                workflow: None,
             };
             let err = fx.engine.post_entry(fx.actor, e).unwrap_err();
             assert_eq!(err.error_code, ErrorCode::UnbalancedEntry);
@@ -234,6 +237,7 @@ fn run_sequence(seed: u64, ops: usize) {
                 prices: Vec::new(),
                 source: EntrySource::Manual,
                 metadata: Value::Null,
+                workflow: None,
             };
             let err = fx.engine.post_entry(fx.actor, e).unwrap_err();
             assert_eq!(err.error_code, ErrorCode::MissingPrice);
@@ -258,6 +262,7 @@ fn run_sequence(seed: u64, ops: usize) {
                 prices: Vec::new(),
                 source: EntrySource::Manual,
                 metadata: Value::Null,
+                workflow: None,
             };
             let err = fx.engine.post_entry(fx.actor, e).unwrap_err();
             assert_eq!(err.error_code, bad_date.1);
@@ -350,6 +355,7 @@ fn run_sequence(seed: u64, ops: usize) {
                     prices: Vec::new(),
                     source: EntrySource::Manual,
                     metadata: Value::Null,
+                    workflow: None,
                 };
                 let result = fx.engine.post_entry(fx.actor, e);
                 if spare_active {
@@ -379,6 +385,7 @@ fn run_sequence(seed: u64, ops: usize) {
                 prices: Vec::new(),
                 source: EntrySource::Manual,
                 metadata: Value::Null,
+                workflow: None,
             };
             let err = fx.engine.post_entry(fx.actor, e).unwrap_err();
             assert_eq!(err.error_code, ErrorCode::InvalidInput);

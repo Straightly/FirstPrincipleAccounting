@@ -1,0 +1,30 @@
+{
+  "workflow_name": "Recording startup expense",
+  "description": "Records an owner-funded or company-paid startup expense as a balanced two-line entry (Impl Spec §7.5.1).",
+  "steps": [
+    {
+      "kind": "form",
+      "collects": [
+        "entry_date",
+        "description",
+        "amount",
+        "expense_or_asset_account_id",
+        "source_account_id",
+        "memo (optional)"
+      ]
+    },
+    {
+      "kind": "api_call",
+      "backend_api": "post_entry"
+    }
+  ],
+  "backend_api_calls": ["post_entry"],
+  "required_inputs": {
+    "entry_date": "date",
+    "description": "string",
+    "amount": "decimal string",
+    "expense_or_asset_account_id": "uuid",
+    "source_account_id": "uuid",
+    "memo": "string (optional)"
+  }
+}
