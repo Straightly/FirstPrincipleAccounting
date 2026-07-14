@@ -29,6 +29,10 @@ pub struct BookMeta {
     pub name: String,
     pub owner_email: String,
     pub created_at_ms: i64,
+    /// A book has exactly one entity, auto-created with the book (Impl Plan
+    /// M7); carried here so callers never need a separate discovery round
+    /// trip to learn it.
+    pub entity_id: Uuid,
 }
 
 /// An open book: the live engine plus the storage handle that persists it.
@@ -109,14 +113,16 @@ impl BooksRegistry {
         self.dir.join(book_id.to_string())
     }
 
-    /// Bootstrap-owner-gated (Impl Spec §5.3): creates the folder, the
-    /// encrypted empty event log, and holds the book open in memory —
-    /// creating a book also opens it, so the caller can act immediately.
+    /// Bootstrap-owner-gated (Impl Spec §5.3): creates the folder and the
+    /// encrypted event log, auto-creates the book's one entity (Impl Plan
+    /// M7 — a book has exactly one, never created separately), and holds
+    /// the book open in memory so the caller can act immediately.
     pub async fn create(
         &self,
         name: String,
         passphrase: &str,
         owner_email: &str,
+        owner_user_id: Uuid,
     ) -> Result<BookMeta, ApiError> {
         let book_id = Uuid::new_v4();
         let dir = self.book_dir(book_id);
@@ -124,14 +130,21 @@ impl BooksRegistry {
         let store = FileBookStore::create(&dir, &provider)
             .await
             .map_err(storage_err)?;
+        let mut engine = AccountingEngine::new(book_id, Box::new(SystemClock));
+        let entity_id = engine.create_entity(Uuid::new_v4(), owner_user_id, &name)?;
+        let new_ids: Vec<Uuid> = engine.audit_log().iter().map(|e| e.event_id).collect();
+        store
+            .persist(engine.audit_log(), &new_ids)
+            .await
+            .map_err(storage_err)?;
         let meta = BookMeta {
             book_id,
             name,
             owner_email: owner_email.to_string(),
             created_at_ms: now_ms(),
+            entity_id,
         };
         write_meta(&dir, &meta).await?;
-        let engine = AccountingEngine::new(book_id, Box::new(SystemClock));
         let open_book = Arc::new(OpenBook {
             meta: meta.clone(),
             engine: RwLock::new(engine),

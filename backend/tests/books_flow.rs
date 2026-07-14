@@ -94,7 +94,10 @@ async fn post(app: &Router, uri: &str, cookie: &str, body: Value) -> axum::respo
     call(app, Method::POST, uri, Some(cookie), Some(body)).await
 }
 
-async fn create_book(app: &Router, cookie: &str, name: &str) -> Uuid {
+/// Creates a book and returns `(book_id, entity_id)` — a book has exactly
+/// one entity, auto-created with the book (Impl Plan M7), so `entity_id`
+/// comes straight from the `create_book` response.
+async fn create_book(app: &Router, cookie: &str, name: &str) -> (Uuid, Uuid) {
     let response = post(
         app,
         "/api/books",
@@ -104,32 +107,24 @@ async fn create_book(app: &Router, cookie: &str, name: &str) -> Uuid {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    Uuid::parse_str(body["book_id"].as_str().unwrap()).unwrap()
+    (
+        Uuid::parse_str(body["book_id"].as_str().unwrap()).unwrap(),
+        Uuid::parse_str(body["entity_id"].as_str().unwrap()).unwrap(),
+    )
 }
 
-/// Golden path: dev-login as the bootstrap owner, create a book, set up an
-/// entity/resource type/chart/accounts/period, post a balanced entry, and
-/// read it back — every call authenticated and authorized (M4 exit criteria).
+/// Golden path: dev-login as the bootstrap owner, create a book (which also
+/// creates its one entity), set up a resource type/chart/accounts/period,
+/// post a balanced entry, and read it back — every call authenticated and
+/// authorized (M4 exit criteria).
 #[tokio::test]
 async fn full_book_lifecycle_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let app = app_over(dir.path());
     let cookie = dev_login(&app, OWNER).await;
 
-    let book_id = create_book(&app, &cookie, "Acme Books").await;
-
-    let entity_resp = post(
-        &app,
-        &format!("/api/books/{book_id}/entities"),
-        &cookie,
-        json!({ "op_id": Uuid::new_v4(), "name": "Acme LLC" }),
-    )
-    .await;
-    assert_eq!(entity_resp.status(), StatusCode::OK);
-    let entity_id = body_json(entity_resp).await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (book_id, entity_id) = create_book(&app, &cookie, "Acme Books").await;
+    let entity_id = entity_id.to_string();
 
     let usd_resp = post(
         &app,
@@ -244,7 +239,7 @@ async fn full_book_lifecycle_over_http() {
     let audit_resp = get(&app, &format!("/api/books/{book_id}/audit-log"), &cookie).await;
     assert_eq!(audit_resp.status(), StatusCode::OK);
     let audit = body_json(audit_resp).await;
-    // entity + resource type + chart + 2 accounts + period + entry = 7 events.
+    // auto-created entity + resource type + chart + 2 accounts + period + entry = 7 events.
     assert_eq!(audit.as_array().unwrap().len(), 7);
 }
 
@@ -288,9 +283,12 @@ async fn book_api_on_unopened_book_is_conflict() {
     let random_book_id = Uuid::new_v4();
     let response = post(
         &app,
-        &format!("/api/books/{random_book_id}/entities"),
+        &format!("/api/books/{random_book_id}/resource-types"),
         &cookie,
-        json!({ "op_id": Uuid::new_v4(), "name": "Acme LLC" }),
+        json!({
+            "op_id": Uuid::new_v4(), "name": "US Dollar", "kind": "CURRENCY",
+            "code": "USD", "unit_of_measure": "USD", "precision": 2
+        }),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
@@ -305,7 +303,7 @@ async fn wrong_passphrase_on_open_is_rejected() {
     // App A creates the book (which also opens it in App A's memory).
     let app_a = app_over(dir.path());
     let cookie_a = dev_login(&app_a, OWNER).await;
-    let book_id = create_book(&app_a, &cookie_a, "Acme Books").await;
+    let (book_id, _entity_id) = create_book(&app_a, &cookie_a, "Acme Books").await;
 
     // App B is a fresh server process pointed at the same books_dir — the
     // book exists on disk but is not open in App B's memory yet.
@@ -338,13 +336,16 @@ async fn idempotent_replay_and_conflict_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let app = app_over(dir.path());
     let cookie = dev_login(&app, OWNER).await;
-    let book_id = create_book(&app, &cookie, "Acme Books").await;
+    let (book_id, _entity_id) = create_book(&app, &cookie, "Acme Books").await;
 
     let op_id = Uuid::new_v4();
-    let body = json!({ "op_id": op_id, "name": "Acme LLC" });
+    let body = json!({
+        "op_id": op_id, "name": "US Dollar", "kind": "CURRENCY",
+        "code": "USD", "unit_of_measure": "USD", "precision": 2
+    });
     let first = post(
         &app,
-        &format!("/api/books/{book_id}/entities"),
+        &format!("/api/books/{book_id}/resource-types"),
         &cookie,
         body.clone(),
     )
@@ -354,7 +355,7 @@ async fn idempotent_replay_and_conflict_over_http() {
 
     let replay = post(
         &app,
-        &format!("/api/books/{book_id}/entities"),
+        &format!("/api/books/{book_id}/resource-types"),
         &cookie,
         body,
     )
@@ -368,9 +369,12 @@ async fn idempotent_replay_and_conflict_over_http() {
 
     let tampered = post(
         &app,
-        &format!("/api/books/{book_id}/entities"),
+        &format!("/api/books/{book_id}/resource-types"),
         &cookie,
-        json!({ "op_id": op_id, "name": "Different Name LLC" }),
+        json!({
+            "op_id": op_id, "name": "Euro", "kind": "CURRENCY",
+            "code": "EUR", "unit_of_measure": "EUR", "precision": 2
+        }),
     )
     .await;
     assert_eq!(tampered.status(), StatusCode::CONFLICT);
@@ -383,21 +387,8 @@ async fn copy_chart_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let app = app_over(dir.path());
     let cookie = dev_login(&app, OWNER).await;
-    let book_id = create_book(&app, &cookie, "Acme Books").await;
-
-    let entity_id = body_json(
-        post(
-            &app,
-            &format!("/api/books/{book_id}/entities"),
-            &cookie,
-            json!({ "op_id": Uuid::new_v4(), "name": "Acme LLC" }),
-        )
-        .await,
-    )
-    .await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let (book_id, entity_id) = create_book(&app, &cookie, "Acme Books").await;
+    let entity_id = entity_id.to_string();
 
     let chart_id = body_json(
         post(

@@ -92,10 +92,14 @@ pub struct CreateBookRequest {
 pub struct BookResponse {
     pub book_id: Uuid,
     pub name: String,
+    /// The book's one entity (Impl Plan M7), created automatically — no
+    /// separate call is needed to learn it.
+    pub entity_id: Uuid,
 }
 
 /// POST /api/books — bootstrap-owner-gated (Impl Spec §5.3). Creating a book
-/// opens it, so the caller can act immediately.
+/// opens it and auto-creates its one entity, so the caller can act
+/// immediately.
 pub async fn create_book(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -121,11 +125,12 @@ pub async fn create_book(
     }
     let meta = state
         .books
-        .create(body.name, &body.passphrase, &user.email)
+        .create(body.name, &body.passphrase, &user.email, user.user_id)
         .await?;
     Ok(Json(BookResponse {
         book_id: meta.book_id,
         name: meta.name,
+        entity_id: meta.entity_id,
     }))
 }
 
@@ -156,6 +161,7 @@ pub async fn open_book(
     Ok(Json(BookResponse {
         book_id: meta.book_id,
         name: meta.name,
+        entity_id: meta.entity_id,
     }))
 }
 
@@ -207,26 +213,12 @@ pub async fn list_my_books(
 // Reference APIs
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub struct CreateEntityRequest {
-    pub op_id: Uuid,
-    pub name: String,
-}
-
-pub async fn create_entity(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Path(book_id): Path<Uuid>,
-    Json(body): Json<CreateEntityRequest>,
-) -> Result<Json<IdResponse>, ApiError> {
-    let (user, open_book) = book_context(&state, &headers, book_id).await?;
-    let id = mutate(&open_book, |engine| {
-        engine.create_entity(body.op_id, user.user_id, &body.name)
-    })
-    .await?;
-    Ok(Json(IdResponse { id }))
-}
-
+/// GET /api/books/:book_id/entities — inspection only (Impl Plan M7): a book
+/// has exactly one entity, auto-created with the book and already available
+/// as `entity_id` on every `list_books`/`list_my_books`/`create_book`
+/// response, so this always returns exactly one result. There is no
+/// `create_entity` endpoint — creating a second entity in a book is not a
+/// supported operation (use `create_sub_book` for related legal entities).
 pub async fn list_entities(
     State(state): State<SharedState>,
     headers: HeaderMap,
@@ -235,32 +227,6 @@ pub async fn list_entities(
     let (_, open_book) = book_context(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
     Ok(Json(engine.list_entities().into_iter().cloned().collect()))
-}
-
-/// GET /api/books/:book_id/entities/mine — the launcher's entity picker
-/// (Impl Plan M6), the second step after `list_my_books`. The owner sees
-/// every entity in the book, exactly as `list_entities` does; any other
-/// user sees only entities where they hold at least one workflow-granting
-/// role.
-pub async fn list_my_entities(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Path(book_id): Path<Uuid>,
-) -> Result<Json<Vec<Entity>>, ApiError> {
-    let (user, open_book) = open_book_for_any_user(&state, &headers, book_id).await?;
-    let engine = open_book.engine.read().await;
-    if state.authz.is_bootstrap_owner(&user) {
-        return Ok(Json(engine.list_entities().into_iter().cloned().collect()));
-    }
-    let entity_ids = engine.entities_with_workflows_for_user(user.user_id);
-    Ok(Json(
-        engine
-            .list_entities()
-            .into_iter()
-            .filter(|e| entity_ids.contains(&e.entity_id))
-            .cloned()
-            .collect(),
-    ))
 }
 
 #[derive(Deserialize)]

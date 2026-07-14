@@ -1,10 +1,10 @@
-# LedgerZero Manual Verification (M0–M6)
+# LedgerZero Manual Verification (M0–M7)
 
 This is the human-in-the-loop counterpart to the automated test suite (70+
 tests across `engine/` and `backend/`, all passing via `./scripts/check.sh`).
 Automated tests prove the code does what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
-*you* want. It also doubles as an early draft of the "scripted demo" M11
+*you* want. It also doubles as an early draft of the "scripted demo" M12
 (hardening) calls for.
 
 Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
@@ -95,24 +95,26 @@ change to the book is both durably written to the encrypted file *and*
 checkpointed into its own local git history, independent of this
 repository's own git history.
 
-## Part 4 — Book and entity picker, as the owner (M6)
+## Part 4 — Book picker, as the owner (M6 + M7)
+
+Since Impl Plan M7, a book has exactly one entity — auto-created with the
+book itself, no separate entity-selection step. Selecting a book is now the
+only thing the picker needs from you.
 
 1. Back in the browser, make sure you're signed in as the owner (Part 1).
 2. Scroll to **My workflows**. The **Book** dropdown should populate with
    at least "Manual Verification Demo" (and any earlier demo runs, or real
    books you've made).
-3. Select it — the **Entity** dropdown appears, populated with "Acme Demo
-   LLC".
-4. Select it — a link appears: **Recording startup expense**. As the
-   owner, you can see this book/entity/workflow because owners see
-   everything, not because you hold a role for it (you don't — check Part
-   6.1 to see the difference).
+3. Select it — a link appears: **Recording startup expense**. As the
+   owner, you can see this book/workflow because owners see every book,
+   not because you hold a role for it (you don't — check Part 6.1 to see
+   the difference).
 
-## Part 5 — Book and entity picker + running the workflow, as a non-owner (M5 + M6)
+## Part 5 — Book picker + running the workflow, as a non-owner (M5 + M6 + M7)
 
-This is the part worth taking time over: it's the actual point of M5 and
-M6 combined — a real employee, with no special authority, discovering and
-running exactly the one thing they're allowed to.
+This is the part worth taking time over: it's the actual point of M5, M6,
+and M7 combined — a real employee, with no special authority, discovering
+and running exactly the one thing they're allowed to.
 
 1. Click **Sign out**, then **Dev sign in** as `demo.employee@example.com`
    (or whatever `LZ_EMPLOYEE_EMAIL` you used).
@@ -121,15 +123,13 @@ running exactly the one thing they're allowed to.
 3. Under **My workflows**, the **Book** dropdown should show *exactly one*
    book — "Manual Verification Demo" — even if other books exist. That
    scoping is `entities_with_workflows_for_user` doing its job (M6).
-4. Select the book → the **Entity** dropdown shows exactly one entity,
-   "Acme Demo LLC".
-5. Select it → the **Recording startup expense** link appears.
-6. Click it. You should land on a *different-looking* page — this is a
+4. Select it → the **Recording startup expense** link appears.
+5. Click it. You should land on a *different-looking* page — this is a
    completely standalone app (its own React copy, no shared code with the
    launcher — M5's "self-contained artifact" requirement) with the title
    "Recording startup expense" and a line "Signed in as
    demo.employee@example.com".
-7. Fill in the form:
+6. Fill in the form:
    - **Expense date**: leave as today, or pick any date within ~60 days
    - **Description**: anything, e.g. "Laptop for new hire"
    - **Amount**: e.g. `1299.00`
@@ -137,7 +137,7 @@ running exactly the one thing they're allowed to.
      account:` id the seed script printed
    - **Paid from account_id (source)**: paste the `cash account:` id
    - Memo: optional
-8. Click **Record expense**. You should see a green confirmation line:
+7. Click **Record expense**. You should see a green confirmation line:
    `Posted entry <uuid> (execution <uuid>).`
 
 That confirmation means a real, balanced, double-entry journal entry was
@@ -209,7 +209,7 @@ for 'admin_ping' ...`.
 - Anything in `engine/` or the storage/idempotency internals — that's what
   the 40+ engine tests are for (`cargo test -p ledgerzero-engine`).
 - The AI-generation path, periods/reconciliation-as-workflow, export/
-  restore, sub-books/consolidation, or hardening — those are M7 onward and
+  restore, sub-books/consolidation, or hardening — those are M8 onward and
   don't exist yet.
 - Cross-browser/mobile rendering — the launcher and workflow artifacts are
   intentionally minimal, unstyled-beyond-basics HTML in this phase.
@@ -218,4 +218,4 @@ for 'admin_ping' ...`.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M7.
+before moving on to M8.

@@ -144,7 +144,9 @@ Rules: periods must not overlap within an entity; `entry_date` must fall inside 
 
 ### 2.8 AccountingBook and Sub-Books
 
-Unchanged in structure from the original spec (book_id, optional parent_book_id, one storage folder, one owner at bootstrap, ownership transfer re-encrypts). The book is the storage, export, restore, and bootstrap security boundary; the entity is the accounting boundary inside it.
+Unchanged in structure from the original spec (book_id, optional parent_book_id, one storage folder, one owner at bootstrap, ownership transfer re-encrypts). **Amended (Impl Plan M7, resolution R1):** the book is the storage, export, restore, bootstrap security, *and* accounting boundary — the two now coincide. Every book has exactly one entity, auto-created when the book is created (2.9); there is no API to create a second one. A book's encryption key, owner, and authority are all scoped to that one legal/accounting entity, so a key compromise or an owner's authority never spans more than one entity's books.
+
+Related legal entities — a holding company's subsidiaries, or one bookkeeper's several clients — are *not* modeled as multiple entities inside one book. Each gets its own book (its own key, its own owner, its own storage folder), linked to a parent via `create_sub_book` and combined only through read-only, rule-based, idempotent consolidation (below) — never by sharing a key or a file. This was already the sub-book mechanism's job; removing multi-entity-per-book doesn't remove any capability, it removes a second, weaker path to the same outcome that bypassed the book's own security boundary.
 
 **Sub-book creation and role copying (resolves the §2.2.0.1 / §7.5.4 contradiction):**
 
@@ -158,7 +160,7 @@ All other sub-book and consolidation semantics carry over: separate first-class 
 
 ### 2.9 Entity, User, Role, WorkflowDefinition
 
-**Entity** — as in the original spec: managed entities have charts, periods, balances; external parties are Entity records referenced by transactions ("counterparty" is a contextual label, not a type). Intercompany activity is separate transactions in each book, linked by metadata.
+**Entity** — has charts, periods, balances; external parties (customers, vendors, banks) are never separate Entity records, only metadata/labels on transactions ("counterparty" is a contextual label, not a type — original spec §2.2.6). **Amended (Impl Plan M7, resolution R1):** exactly one `Entity` per book, auto-created (named after the book) when `create_accounting_book` runs; `create_entity` is no longer a client-facing operation — the engine rejects a second entity in the same book. Intercompany activity between related legal entities is separate transactions in each entity's own book, linked by metadata, not by sharing a book.
 
 **User**
 
@@ -297,15 +299,15 @@ Unchanged from the original spec §7.2: generation flows user → MCP → Python
 
 ### 6.4 MCP primitives (v1)
 
-`generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition`, `create_role`, `assign_workflow_to_role`, `assign_role_to_user`, `create_accounting_book`, `create_sub_book`, `list_sub_books`, `create_entity`, `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `create_period`, `close_period`, `reopen_period`, `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`, `explain_reconciliation_issue`. The set grows when a workflow needs a missing primitive; additions are recorded here.
+`generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition`, `create_role`, `assign_workflow_to_role`, `assign_role_to_user`, `create_accounting_book`, `create_sub_book`, `list_sub_books`, `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `create_period`, `close_period`, `reopen_period`, `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`, `explain_reconciliation_issue`. The set grows when a workflow needs a missing primitive; additions are recorded here. **Amended (Impl Plan M7):** no `create_entity` primitive — `create_accounting_book` creates the book's one entity automatically (§2.8, §2.9).
 
 ### 6.5 Backend application API (v1)
 
 Authentication/authorization endpoints, plus:
 
-- Books: `open_book`, `create_accounting_book`, `create_sub_book`, `list_sub_books`, `export_book`, `restore_book`
-- Discovery: `list_my_books`, `list_my_entities` — the launcher's book/entity picker (§7.1). The owner sees every book/entity (as `list_books`/`list_accounts`-adjacent reference calls already allow); any other signed-in user sees only books/entities where they hold at least one workflow-granting role — never a raw enumeration they'd have to already know the id to request.
-- Reference: `create_entity`, `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `update_account_metadata`, `deactivate_account`, `list_accounts`
+- Books: `open_book`, `create_accounting_book` (also creates the book's one entity, §2.9), `create_sub_book`, `list_sub_books`, `export_book`, `restore_book`
+- Discovery: `list_my_books` — the launcher's book picker (§7.1). The owner sees every book (as `list_books` already allows); any other signed-in user sees only books where they hold at least one workflow-granting role — never a raw enumeration they'd have to already know the id to request. Each result carries its `entity_id` directly (one per book, §2.8), so no separate entity-discovery call exists or is needed.
+- Reference: `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `update_account_metadata`, `deactivate_account`, `list_accounts`, `list_entities` (inspection only — always returns the book's one entity)
 - Ledger: `post_entry`, `reverse_entry`, `get_balance`, `list_entries`, `get_audit_log`, `record_price`, `list_prices`
 - Periods: `create_period`, `close_period`, `reopen_period`
 - Authorization: `create_role`, `assign_workflow_to_role`, `assign_role_to_user`
@@ -317,7 +319,7 @@ All rules from the original spec §7.4 carry over verbatim: the backend API is t
 
 Carried over from the original spec §7.5 with these updates:
 
-- **Bootstrap flow**: fresh install per 5.3 → `create_accounting_book` (or `Open book` for an existing book) → `Adding a workflow` → `Add an entity`. Finding a workflow to run is itself bootstrapped the same way: the launcher's book/entity picker (`list_my_books`/`list_my_entities`, §6.5) needs no deployed artifact and no prior knowledge of a `book_id`/`entity_id` — it is how a non-owner, role-assigned user reaches `workflows/mine` at all (Impl Plan M6).
+- **Bootstrap flow**: fresh install per 5.3 → `create_accounting_book` (which also creates the book's one entity, §2.9 — there is no separate `Add an entity` step, Impl Plan M7) or `Open book` for an existing book → `Adding a workflow`. Finding a workflow to run is itself bootstrapped the same way: the launcher's book picker (`list_my_books`, §6.5) needs no deployed artifact and no prior knowledge of a `book_id` — it is how a non-owner, role-assigned user reaches `workflows/mine` at all (Impl Plan M6, simplified in M7 once a book's `entity_id` no longer needs its own discovery step).
 - **7.5.1 Recording startup expense** and **7.5.2 Manual bank transactions**: unchanged, except inputs reference resource types (not free-form units) and cross-unit entries carry recorded prices.
 - **7.5.3 EOP bank reconciliation**: unchanged; corrections are new reversal/adjusting entries; result recorded as an administrative event.
 - **7.5.4 Add a sub-book**: updated to require the child-owner choice and copy mode per 2.8; projections in-file, not JSON files.
@@ -328,9 +330,9 @@ Carried over from the original spec §7.5 with these updates:
 
 ### 7.1 Topology and stack
 
-**Backend: Rust end-to-end.** One Rust binary (Axum) is the routing server, authentication/authorization layer, runtime backend application server, and hosts the `AccountingEngine` in-process. It is the only component with storage access. It also serves the built frontend assets and deployed workflow artifacts, and exposes `GET /api/health` as an unauthenticated liveness endpoint (fuller observability arrives with hardening, M11).
+**Backend: Rust end-to-end.** One Rust binary (Axum) is the routing server, authentication/authorization layer, runtime backend application server, and hosts the `AccountingEngine` in-process. It is the only component with storage access. It also serves the built frontend assets and deployed workflow artifacts, and exposes `GET /api/health` as an unauthenticated liveness endpoint (fuller observability arrives with hardening, M12).
 
-**Frontend: self-contained React apps per workflow, plus a minimal launcher.** Each deployed workflow is a complete, standalone React app: its own bundle (including its own React copy), its own route, its own mount point — served from the artifact path. A minimal launcher app owns login, session, a book/entity picker, and the workflow menu, and simply navigates to each workflow's route. The picker (`list_my_books`/`list_my_entities`, §6.5) is itself a bootstrapped launcher capability in the same sense as `Open book`/`Adding a workflow` (§6.6) — built into the launcher, not a deployed `WorkflowDefinition` artifact — so any authorized user can reach their assigned workflows starting from nothing but sign-in, never needing to already know a `book_id` or `entity_id` (Impl Plan M6). **There are no shared JavaScript dependencies between launcher and workflows** — no shared React instance, no import maps, no shell-provided context. Auth/session reaches workflows through the session cookie/token on backend API calls, not through frontend coupling. Deploying a workflow never rebuilds anything else. Cost: each workflow bundle carries React (~50 KB gzipped, cached after first load) — accepted as insignificant. Benefit: zero version-skew risk, and every deployed artifact is a complete, independently auditable app.
+**Frontend: self-contained React apps per workflow, plus a minimal launcher.** Each deployed workflow is a complete, standalone React app: its own bundle (including its own React copy), its own route, its own mount point — served from the artifact path. A minimal launcher app owns login, session, a book picker, and the workflow menu, and simply navigates to each workflow's route. The picker (`list_my_books`, §6.5) is itself a bootstrapped launcher capability in the same sense as `Open book`/`Adding a workflow` (§6.6) — built into the launcher, not a deployed `WorkflowDefinition` artifact — so any authorized user can reach their assigned workflows starting from nothing but sign-in, never needing to already know a `book_id` (Impl Plan M6). It is a *book* picker, not a book/entity picker: since M7 constrains every book to exactly one entity (§2.8), selecting a book already determines the entity — there is no second selection step. **There are no shared JavaScript dependencies between launcher and workflows** — no shared React instance, no import maps, no shell-provided context. Auth/session reaches workflows through the session cookie/token on backend API calls, not through frontend coupling. Deploying a workflow never rebuilds anything else. Cost: each workflow bundle carries React (~50 KB gzipped, cached after first load) — accepted as insignificant. Benefit: zero version-skew risk, and every deployed artifact is a complete, independently auditable app.
 
 **MCP server + Python dev-time backend:** remain Python (the existing `mcp_server` package), owning MCP primitives, LLM access, prompt/context assembly, artifact preparation, and deployment support. **The `engine/` and `storage/` modules currently inside `mcp_server` are removed** — those responsibilities belong to the Rust engine. The Python side reaches accounting data only through runtime backend APIs.
 
@@ -400,3 +402,9 @@ Gap references are to `LedgerZero_Spec_Gap_Analysis.md`.
 | B14 error model | Structured error catalog (4.4) |
 | B15 testing | Property/replay/idempotency/crash/API tests required (7.5) |
 | D1–D8 deferrals | Cross-server consolidation auth, book-level FX translation, consolidation scheduling beyond on-demand `run_consolidation`, containerization, year-end close, reporting tools, re-open-by-branching, brokerage import — all explicitly deferred |
+
+Post-implementation resolutions (found after M0–M6 were built, not in the original gap analysis):
+
+| # | Resolution |
+|----|----|
+| R1 | Multi-entity-per-book removed (Impl Plan M7): a book's encryption key and owner authority previously could span several legally distinct entities, which is a real security-boundary crossing, not just an implementation convenience — a key compromise or an owner's blanket authority reached every entity sharing the book. Every book now has exactly one entity, auto-created with `create_accounting_book`; `create_entity` is retired as a client-facing operation. Related legal entities (holding company/subsidiaries, one bookkeeper's several clients) already had a correct mechanism — separate books linked via `create_sub_book` and combined only through read-only, idempotent consolidation — so this removes a second, weaker path to the same outcome, not a capability (2.8, 2.9, 6.5, 6.6, 7.1). Also simplified the M6 launcher picker to a single book-selection step, since selecting a book now already determines its one entity.|

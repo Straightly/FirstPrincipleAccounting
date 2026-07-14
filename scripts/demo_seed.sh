@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# LedgerZero manual-verification seed: creates a demo book with an entity,
-# chart, two accounts, an open period, deploys the hand-built "Recording
-# startup expense" workflow (M5), and assigns its auto-role to a second
-# ("employee") user (M6) — everything docs/LedgerZero_Manual_Verification.md
-# needs to walk through in a browser. Requires a running server
+# LedgerZero manual-verification seed: creates a demo book (whose one entity
+# is auto-created with it, Impl Plan M7), a chart, two accounts, an open
+# period, deploys the hand-built "Recording startup expense" workflow (M5),
+# and assigns its auto-role to a second ("employee") user (M6) —
+# everything docs/LedgerZero_Manual_Verification.md needs to walk through in
+# a browser. Requires a running server
 # (./scripts/check.sh then `cargo run -p ledgerzero-backend`), curl, python3.
 #
 # Run from the repository root: ./scripts/demo_seed.sh
@@ -32,15 +33,12 @@ echo "== dev-login as owner ($OWNER_EMAIL) =="
 curl -s -c "$COOKIE" -H 'Content-Type: application/json' \
   -d "{\"email\":\"$OWNER_EMAIL\"}" "$BASE/auth/dev-login" >/dev/null
 
-echo "== create book =="
-BOOK_ID=$(curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
+echo "== create book (its one entity is auto-created with it, M7) =="
+BOOK_RESP=$(curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
   -d "{\"name\":\"Manual Verification Demo\",\"passphrase\":\"$PASSPHRASE\"}" \
-  "$BASE/books" | get '["book_id"]')
-
-echo "== create entity =="
-ENTITY_ID=$(curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
-  -d "{\"op_id\":\"$(uuid)\",\"name\":\"Acme Demo LLC\"}" \
-  "$BASE/books/$BOOK_ID/entities" | get '["id"]')
+  "$BASE/books")
+BOOK_ID=$(echo "$BOOK_RESP" | get '["book_id"]')
+ENTITY_ID=$(echo "$BOOK_RESP" | get '["entity_id"]')
 
 echo "== create USD resource type =="
 USD_ID=$(curl -s -b "$COOKIE" -H 'Content-Type: application/json' \

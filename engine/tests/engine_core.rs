@@ -588,3 +588,22 @@ fn replay_rebuilds_identical_state() {
     let replayed = EngineState::replay(fx.book, fx.engine.audit_log()).unwrap();
     assert_eq!(&replayed, fx.engine.state());
 }
+
+#[test]
+fn a_book_has_exactly_one_entity() {
+    // Impl Plan M7: the fixture's own entity already exists; a second
+    // create_entity call must be rejected structurally, not merely by
+    // removing the client-facing route.
+    let mut fx = fixture();
+    let before = fx.engine.state().clone();
+    let err = fx
+        .engine
+        .create_entity(id(), fx.actor, "Second Entity")
+        .unwrap_err();
+    assert_eq!(err.error_code, ErrorCode::InvalidInput);
+    assert_eq!(
+        fx.engine.state(),
+        &before,
+        "a rejected create_entity must not mutate state"
+    );
+}

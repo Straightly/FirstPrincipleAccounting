@@ -126,7 +126,7 @@ pub struct ReverseEntry {
 /// the artifact itself must embed its own `workflow_id` (to build the
 /// `WorkflowContext` on its backend calls) before it is ever deployed, so
 /// the engine cannot be the one to generate it. It is the stable identity
-/// that would survive a future redeployment under the same name (M7+); v1
+/// that would survive a future redeployment under the same name (M8+); v1
 /// has no redeploy path, so it is simply recorded as given.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NewWorkflowDeployment {
@@ -529,6 +529,15 @@ impl AccountingEngine {
 
     // -- reference mutations --------------------------------------------------
 
+    /// Impl Spec §2.8/§2.9 (Impl Plan M7): a book has exactly one entity —
+    /// its encryption key and owner authority are a security boundary, and
+    /// letting several legally distinct entities share one book would let a
+    /// key compromise or an owner's blanket authority reach all of them.
+    /// Related legal entities get their own books instead, linked via
+    /// `create_sub_book` and combined only through read-only consolidation.
+    /// Callers needing multiple related entities should use that mechanism,
+    /// not a second call here — which this rejects structurally, not just
+    /// by removing the client-facing route.
     pub fn create_entity(
         &mut self,
         op_id: Uuid,
@@ -539,13 +548,13 @@ impl AccountingEngine {
         if let Some(done) = self.check_idempotency(op_id, &request)? {
             return Ok(done);
         }
+        if !self.state.entities.is_empty() {
+            return Err(EngineError::invalid_input(
+                "a book has exactly one entity (Impl Plan M7); use create_sub_book for related legal entities",
+            ));
+        }
         if name.trim().is_empty() {
             return Err(EngineError::invalid_input("entity name must not be empty"));
-        }
-        if self.state.entities.values().any(|e| e.name == name) {
-            return Err(EngineError::invalid_input(format!(
-                "entity name already exists: {name:?}"
-            )));
         }
         let entity = Entity {
             entity_id: Uuid::new_v4(),

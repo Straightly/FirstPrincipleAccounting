@@ -104,7 +104,7 @@ async fn dev_login(app: &Router, email: &str) -> (String, Uuid) {
     (cookie, user_id)
 }
 
-async fn create_book(app: &Router, cookie: &str) -> Uuid {
+async fn create_book(app: &Router, cookie: &str) -> (Uuid, Uuid) {
     let response = post(
         app,
         "/api/books",
@@ -113,7 +113,11 @@ async fn create_book(app: &Router, cookie: &str) -> Uuid {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    Uuid::parse_str(body_json(response).await["book_id"].as_str().unwrap()).unwrap()
+    let body = body_json(response).await;
+    (
+        Uuid::parse_str(body["book_id"].as_str().unwrap()).unwrap(),
+        Uuid::parse_str(body["entity_id"].as_str().unwrap()).unwrap(),
+    )
 }
 
 async fn id_field(response: axum::response::Response) -> Uuid {
@@ -144,17 +148,7 @@ fn write_artifact(dev_artifacts_dir: &std::path::Path, deployment_id: Uuid) {
 /// Sets up a book with one entity, a USD asset/expense account pair, and an
 /// open period — everything `post_entry` needs — returning the ids used.
 async fn setup_book(app: &Router, owner_cookie: &str) -> (Uuid, Uuid, Uuid, Uuid) {
-    let book_id = create_book(app, owner_cookie).await;
-    let entity_id = id_field(
-        post(
-            app,
-            &format!("/api/books/{book_id}/entities"),
-            owner_cookie,
-            json!({ "op_id": Uuid::new_v4(), "name": "Acme LLC" }),
-        )
-        .await,
-    )
-    .await;
+    let (book_id, entity_id) = create_book(app, owner_cookie).await;
     let usd = id_field(
         post(
             app,
@@ -548,11 +542,14 @@ async fn deploy_workflow_fails_when_artifact_is_missing_from_disk() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
-/// M6: the launcher's book/entity picker. Deploys a workflow and assigns
-/// its auto-role to an employee, then checks `GET /books/mine` and
-/// `GET /books/:id/entities/mine` from three viewpoints: the owner (sees
-/// everything), the assigned employee (sees only this book/entity), and an
-/// unassigned stranger (sees nothing, not an error).
+/// M6/M7: the launcher's book picker. Deploys a workflow and assigns its
+/// auto-role to an employee, then checks `GET /books/mine` (each book now
+/// carries its one entity_id directly, Impl Plan M7) — where the bootstrap
+/// owner sees every book regardless of role assignment — and
+/// `GET /books/:id/workflows/mine`, which is scoped purely by role
+/// assignment even for the owner: the deploying owner holds no role here,
+/// the assigned employee sees exactly the one workflow their role grants,
+/// and an unassigned stranger sees nothing, not an error.
 #[tokio::test]
 async fn book_and_entity_picker_scopes_by_role_assignment() {
     let books_dir = tempfile::tempdir().unwrap();
@@ -597,37 +594,44 @@ async fn book_and_entity_picker_scopes_by_role_assignment() {
     .await;
     let (stranger_cookie, _) = dev_login(&app, "stranger@example.com").await;
 
-    // Owner: /books/mine matches /books exactly (every book on disk).
+    // Owner: /books/mine matches /books exactly (every book on disk), and
+    // the book already carries its one entity_id (Impl Plan M7).
     let owner_books = body_json(get(&app, "/api/books/mine", &owner_cookie).await).await;
-    assert_eq!(owner_books.as_array().unwrap().len(), 1);
-    let owner_entities = body_json(
+    let owner_books = owner_books.as_array().unwrap();
+    assert_eq!(owner_books.len(), 1);
+    assert_eq!(owner_books[0]["entity_id"], entity_id.to_string());
+    let owner_workflows = body_json(
         get(
             &app,
-            &format!("/api/books/{book_id}/entities/mine"),
+            &format!("/api/books/{book_id}/workflows/mine?entity_id={entity_id}"),
             &owner_cookie,
         )
         .await,
     )
     .await;
-    assert_eq!(owner_entities.as_array().unwrap().len(), 1);
+    assert_eq!(
+        owner_workflows.as_array().unwrap().len(),
+        0,
+        "workflows/mine is role-scoped even for the bootstrap owner"
+    );
 
-    // Employee: sees exactly the one book/entity they were assigned into.
+    // Employee: sees exactly the one book they were assigned into, with the
+    // one workflow their role grants.
     let employee_books = body_json(get(&app, "/api/books/mine", &employee_cookie).await).await;
     let employee_books = employee_books.as_array().unwrap();
     assert_eq!(employee_books.len(), 1);
     assert_eq!(employee_books[0]["book_id"], book_id.to_string());
-    let employee_entities = body_json(
+    assert_eq!(employee_books[0]["entity_id"], entity_id.to_string());
+    let employee_workflows = body_json(
         get(
             &app,
-            &format!("/api/books/{book_id}/entities/mine"),
+            &format!("/api/books/{book_id}/workflows/mine?entity_id={entity_id}"),
             &employee_cookie,
         )
         .await,
     )
     .await;
-    let employee_entities = employee_entities.as_array().unwrap();
-    assert_eq!(employee_entities.len(), 1);
-    assert_eq!(employee_entities[0]["entity_id"], entity_id.to_string());
+    assert_eq!(employee_workflows.as_array().unwrap().len(), 1);
 
     // Stranger: authenticated, but no role anywhere — empty, not an error.
     let stranger_books_resp = get(&app, "/api/books/mine", &stranger_cookie).await;
@@ -640,15 +644,15 @@ async fn book_and_entity_picker_scopes_by_role_assignment() {
             .len(),
         0
     );
-    let stranger_entities_resp = get(
+    let stranger_workflows_resp = get(
         &app,
-        &format!("/api/books/{book_id}/entities/mine"),
+        &format!("/api/books/{book_id}/workflows/mine?entity_id={entity_id}"),
         &stranger_cookie,
     )
     .await;
-    assert_eq!(stranger_entities_resp.status(), StatusCode::OK);
+    assert_eq!(stranger_workflows_resp.status(), StatusCode::OK);
     assert_eq!(
-        body_json(stranger_entities_resp)
+        body_json(stranger_workflows_resp)
             .await
             .as_array()
             .unwrap()

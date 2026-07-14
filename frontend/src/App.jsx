@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 // M5 adds the workflow menu: every deployed workflow the signed-in user
 // holds a role for, navigating out to each workflow's own standalone route.
 // M6 replaces the M5 book_id/entity_id text inputs with a real bootstrapped
-// picker (book -> entity -> workflow), so a non-owner user with a role
-// assignment never needs to already know a raw book_id or entity_id.
+// picker, so a non-owner user with a role assignment never needs to already
+// know a raw id. M7 constrains every book to exactly one entity (a book's
+// key/owner is now also its accounting boundary), so the picker is a single
+// book-selection step — the book's entity_id comes along for free.
 
 const box = {
   maxWidth: 480,
@@ -35,8 +37,6 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [books, setBooks] = useState(null);
   const [selectedBookId, setSelectedBookId] = useState("");
-  const [entities, setEntities] = useState(null);
-  const [selectedEntityId, setSelectedEntityId] = useState("");
   const [myWorkflows, setMyWorkflows] = useState(null);
   const [pickerError, setPickerError] = useState("");
 
@@ -88,11 +88,13 @@ export default function App() {
     setMessage("");
   }
 
-  // Book/entity picker (Impl Spec §6.5/§7.1, Impl Plan M6): a bootstrapped
+  // Book picker (Impl Spec §6.5/§7.1, Impl Plan M6/M7): a bootstrapped
   // launcher capability, the same kind as "Open book"/"Adding a workflow" —
-  // not a deployed workflow artifact. The owner sees every book/entity; any
-  // other signed-in user sees only ones where they hold a workflow-granting
-  // role, discovered purely from server-side role assignments.
+  // not a deployed workflow artifact. The owner sees every book; any other
+  // signed-in user sees only ones where they hold a workflow-granting role,
+  // discovered purely from server-side role assignments. Each book already
+  // carries its one entity_id (M7: a book has exactly one entity), so
+  // selecting a book is the only step needed before the workflow menu.
   useEffect(() => {
     if (!me) return;
     setPickerError("");
@@ -102,28 +104,21 @@ export default function App() {
     });
   }, [me]);
 
-  useEffect(() => {
-    setEntities(null);
-    setSelectedEntityId("");
-    if (!selectedBookId) return;
-    setPickerError("");
-    api(`/api/books/${selectedBookId}/entities/mine`).then((r) => {
-      if (r.ok) setEntities(r.body);
-      else setPickerError(`${r.body.error_code}: ${r.body.message}`);
-    });
-  }, [selectedBookId]);
+  const selectedBook = (books || []).find((b) => b.book_id === selectedBookId);
 
   useEffect(() => {
     setMyWorkflows(null);
-    if (!selectedBookId || !selectedEntityId) return;
+    if (!selectedBookId || !books) return;
+    const book = books.find((b) => b.book_id === selectedBookId);
+    if (!book) return;
     setPickerError("");
     api(
-      `/api/books/${selectedBookId}/workflows/mine?entity_id=${selectedEntityId}`
+      `/api/books/${book.book_id}/workflows/mine?entity_id=${book.entity_id}`
     ).then((r) => {
       if (r.ok) setMyWorkflows(r.body);
       else setPickerError(`${r.body.error_code}: ${r.body.message}`);
     });
-  }, [selectedBookId, selectedEntityId]);
+  }, [selectedBookId, books]);
 
   if (authConfig === null) {
     return <div style={box}>Loading…</div>;
@@ -217,43 +212,18 @@ export default function App() {
           </select>
         </label>
       )}
-      {selectedBookId && entities === null && (
-        <p style={{ color: "#666" }}>Loading entities…</p>
-      )}
-      {entities && entities.length === 0 && (
-        <p style={{ color: "#666" }}>
-          No entities available to you in this book.
-        </p>
-      )}
-      {entities && entities.length > 0 && (
-        <label style={{ display: "block", marginTop: 8 }}>
-          Entity
-          <select
-            value={selectedEntityId}
-            onChange={(e) => setSelectedEntityId(e.target.value)}
-            style={{ display: "block", padding: 8, width: "100%", marginTop: 4 }}
-          >
-            <option value="">Choose an entity…</option>
-            {entities.map((ent) => (
-              <option key={ent.entity_id} value={ent.entity_id}>
-                {ent.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       {pickerError && <p style={{ color: "#a00" }}>{pickerError}</p>}
       {myWorkflows && myWorkflows.length === 0 && (
         <p style={{ color: "#666" }}>
-          No workflows in this entity are assigned to you.
+          No workflows in this book are assigned to you.
         </p>
       )}
-      {myWorkflows && myWorkflows.length > 0 && (
+      {myWorkflows && myWorkflows.length > 0 && selectedBook && (
         <ul>
           {myWorkflows.map((w) => (
             <li key={w.workflow_deployment_id}>
               <a
-                href={`${w.frontend_route}?book_id=${selectedBookId}&entity_id=${selectedEntityId}`}
+                href={`${w.frontend_route}?book_id=${selectedBook.book_id}&entity_id=${selectedBook.entity_id}`}
               >
                 {w.workflow_name}
               </a>
