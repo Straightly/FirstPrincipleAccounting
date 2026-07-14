@@ -1,0 +1,221 @@
+# LedgerZero Manual Verification (M0–M6)
+
+This is the human-in-the-loop counterpart to the automated test suite (70+
+tests across `engine/` and `backend/`, all passing via `./scripts/check.sh`).
+Automated tests prove the code does what it claims; this walkthrough is
+where you look at the actual running system and judge whether it does what
+*you* want. It also doubles as an early draft of the "scripted demo" M11
+(hardening) calls for.
+
+Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
+fresh demo book every time (a new random id), so nothing you do here can
+corrupt a real book you create later.
+
+## Before you start
+
+1. Build everything once: `./scripts/check.sh` (fmt/clippy/tests, frontend
+   build, Python tests — if this doesn't pass, nothing below will work
+   either).
+2. Start the server from the repo root: `cargo run -p ledgerzero-backend`
+   (uses `server.config.toml`; `dev_login` is enabled there, so nothing
+   below needs your real Google credentials — though you're welcome to use
+   real Google login wherever a step says "sign in").
+3. Open **http://localhost:8080** in a browser.
+
+Keep the server running in a terminal for everything below; watch that
+terminal's output too — it prints a line for every request and will show
+any panics.
+
+---
+
+## Part 1 — Login and identity (M1)
+
+1. You should land on a page titled **LedgerZero** with "Sign in to
+   continue." and, since dev login is on, an email box + **Dev sign in**
+   button (plus a **Sign in with Google** button if you've configured real
+   OAuth credentials).
+2. Type your bootstrap owner email (`zhian.job@gmail.com` unless you've
+   changed `server.config.toml`) and click **Dev sign in** — or use the
+   Google button and sign in for real.
+3. You should now see:
+   - "Signed in as **\<your name\>** (\<your email\>)"
+   - a `user_id:` line (a UUID — this is now your permanent LedgerZero
+     identity, independent of which login method you used)
+   - "Bootstrap owner: **yes**"
+   - "Allowed actions: create_accounting_book, open_book, list_books,
+     book_api, admin_ping"
+4. Click **Test owner-gated endpoint** — expect a message like `admin ping:
+   pong (owner zhian.job@gmail.com)`. This is the M1 walking-skeleton proof
+   that routing → session → authorization → a real backend check all work.
+5. Click **Rotate session** — expect "Session token rotated." Nothing
+   visibly changes, but your session cookie was swapped server-side (you
+   can watch this in the server log: a `rotate` line).
+6. Click **Sign out** — you should land back on the sign-in screen.
+7. Sign back in (dev-login is fine) before continuing.
+
+## Part 2 — Seed a demo book (setup for M4/M5/M6)
+
+There is deliberately no "create a book" button in the launcher yet (M4
+added the API, not a UI for it — a real gap, tracked, not something to
+worry about now). Seed one from the command line instead:
+
+```sh
+./scripts/demo_seed.sh
+```
+
+Read its output — it prints the `book_id`/`entity_id` it created and
+confirms it deployed the hand-built workflow and assigned it to a second
+("employee") user. You don't need to copy those ids down; the picker in
+Part 4 finds them for you.
+
+If you want a specific owner/employee email or passphrase instead of the
+defaults, set env vars before running it, e.g.:
+
+```sh
+LZ_EMPLOYEE_EMAIL=you+employee@example.com ./scripts/demo_seed.sh
+```
+
+## Part 3 — What actually landed on disk (M3)
+
+The book the script just created is real, encrypted, and version-controlled
+on your machine. Look at it:
+
+```sh
+ls books/                         # one folder, named by book_id
+ls books/<book_id>/               # book.data.enc, book.keystore.json, export/
+file books/<book_id>/book.data.enc      # binary data, not JSON/text
+cat books/<book_id>/book.keystore.json  # readable JSON — but no plaintext key,
+                                         # only Argon2id params + a wrapped key
+git -C books/<book_id> log --oneline    # one commit per mutation batch,
+                                         # e.g. "book created", "mutation batch: <event ids>"
+```
+
+That git log is the concrete evidence for M3's durability story: every
+change to the book is both durably written to the encrypted file *and*
+checkpointed into its own local git history, independent of this
+repository's own git history.
+
+## Part 4 — Book and entity picker, as the owner (M6)
+
+1. Back in the browser, make sure you're signed in as the owner (Part 1).
+2. Scroll to **My workflows**. The **Book** dropdown should populate with
+   at least "Manual Verification Demo" (and any earlier demo runs, or real
+   books you've made).
+3. Select it — the **Entity** dropdown appears, populated with "Acme Demo
+   LLC".
+4. Select it — a link appears: **Recording startup expense**. As the
+   owner, you can see this book/entity/workflow because owners see
+   everything, not because you hold a role for it (you don't — check Part
+   6.1 to see the difference).
+
+## Part 5 — Book and entity picker + running the workflow, as a non-owner (M5 + M6)
+
+This is the part worth taking time over: it's the actual point of M5 and
+M6 combined — a real employee, with no special authority, discovering and
+running exactly the one thing they're allowed to.
+
+1. Click **Sign out**, then **Dev sign in** as `demo.employee@example.com`
+   (or whatever `LZ_EMPLOYEE_EMAIL` you used).
+2. Notice "Bootstrap owner: **no**" and "Allowed actions: **none**" — this
+   user has zero blanket authority.
+3. Under **My workflows**, the **Book** dropdown should show *exactly one*
+   book — "Manual Verification Demo" — even if other books exist. That
+   scoping is `entities_with_workflows_for_user` doing its job (M6).
+4. Select the book → the **Entity** dropdown shows exactly one entity,
+   "Acme Demo LLC".
+5. Select it → the **Recording startup expense** link appears.
+6. Click it. You should land on a *different-looking* page — this is a
+   completely standalone app (its own React copy, no shared code with the
+   launcher — M5's "self-contained artifact" requirement) with the title
+   "Recording startup expense" and a line "Signed in as
+   demo.employee@example.com".
+7. Fill in the form:
+   - **Expense date**: leave as today, or pick any date within ~60 days
+   - **Description**: anything, e.g. "Laptop for new hire"
+   - **Amount**: e.g. `1299.00`
+   - **Expense or asset account (account_id)**: paste the `expense
+     account:` id the seed script printed
+   - **Paid from account_id (source)**: paste the `cash account:` id
+   - Memo: optional
+8. Click **Record expense**. You should see a green confirmation line:
+   `Posted entry <uuid> (execution <uuid>).`
+
+That confirmation means a real, balanced, double-entry journal entry was
+posted — by an employee with no blanket authority — purely because they
+hold a role granting exactly this workflow.
+
+## Part 6 — Prove the negative cases too
+
+A system that only shows you the happy path hasn't shown you much. These
+take two minutes and are the most convincing part of the whole exercise.
+
+### 6.1 — The owner can't run a workflow they aren't assigned to
+
+1. Sign out, sign back in as the **owner**.
+2. Navigate directly to the workflow URL you used in Part 5 (copy it from
+   your browser history, or revisit it via the picker).
+3. You should see a red warning: "You are not currently authorized to run
+   this workflow for this entity — the server will reject any submission."
+4. Fill in the form anyway and submit it. It should fail. Open your
+   browser's network/dev tools (or just trust the UI) — the request comes
+   back `403 Forbidden`, `{"error_code":"UNAUTHORIZED_WORKFLOW", ...}`.
+   The book's *owner* — who created it — still cannot post through a
+   workflow they hold no role for. Authorization here is genuinely
+   workflow-scoped, not an owner bypass with extra steps.
+
+### 6.2 — A stranger with no assignment anywhere sees nothing
+
+1. Dev-sign-in as a brand-new email, e.g. `nobody@example.com`.
+2. Under **My workflows**, the **Book** dropdown should be empty — "No
+   books available to you yet." Not an error, just nothing to show,
+   because this user has no role anywhere.
+
+### 6.3 — A wrong passphrase is rejected
+
+A book already open in the server's memory answers `open_book` without
+even checking the passphrase (that's the M4 idempotent-open behavior) — so
+this check needs a book the *running process* hasn't opened yet. Stop the
+server (Ctrl-C), start it again (`cargo run -p ledgerzero-backend`), then
+run this from a terminal — no browser cookie-copying needed, it logs in
+for itself:
+
+```sh
+BOOK_ID=$(ls books/ | head -1)
+COOKIE=$(mktemp)
+curl -s -c "$COOKIE" -H 'Content-Type: application/json' \
+  -d '{"email":"zhian.job@gmail.com"}' \
+  http://localhost:8080/api/auth/dev-login >/dev/null
+curl -s -b "$COOKIE" -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"passphrase":"definitely wrong"}' \
+  http://localhost:8080/api/books/$BOOK_ID/open
+rm -f "$COOKIE"
+```
+
+Expect `{"error_code":"WRONG_PASSPHRASE", ...}` (HTTP 401). Re-run with
+`"passphrase":"demo passphrase, change me"` (or whatever `LZ_PASSPHRASE`
+you used) and it should succeed instead.
+
+### 6.4 — A non-owner can't create books or see the admin endpoint
+
+Signed in as the employee or stranger from above, click **Test
+owner-gated endpoint** — expect `UNAUTHORIZED_API: user is not authorized
+for 'admin_ping' ...`.
+
+---
+
+## What you're *not* expected to check here
+
+- Anything in `engine/` or the storage/idempotency internals — that's what
+  the 40+ engine tests are for (`cargo test -p ledgerzero-engine`).
+- The AI-generation path, periods/reconciliation-as-workflow, export/
+  restore, sub-books/consolidation, or hardening — those are M7 onward and
+  don't exist yet.
+- Cross-browser/mobile rendering — the launcher and workflow artifacts are
+  intentionally minimal, unstyled-beyond-basics HTML in this phase.
+
+## If something doesn't match this document
+
+That's exactly what this exercise is for — tell me what you saw instead
+and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
+before moving on to M7.
