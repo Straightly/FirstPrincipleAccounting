@@ -13,7 +13,7 @@ local dev artifact store (Impl Spec §7.4) — never a book file directly
 primitives (Impl Plan M8); the rest are the admin primitives from §6.4 that
 already have a backend endpoint to call (sub-book, consolidation, and
 reconciliation-explanation primitives are not implemented yet — those
-features don't exist on the backend until M9/M11).
+features don't exist on the backend until M11/M12).
 """
 
 from __future__ import annotations

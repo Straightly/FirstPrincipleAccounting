@@ -5,7 +5,7 @@ tests across `engine/`/`backend/` plus 25 more in `mcp_server/`, all
 passing via `./scripts/check.sh`). Automated tests prove the code does
 what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
-*you* want. It also doubles as an early draft of the "scripted demo" M12
+*you* want. It also doubles as an early draft of the "scripted demo" M10
 (hardening) calls for.
 
 Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
@@ -262,10 +262,10 @@ like Part 4/5 verified the hand-built one.
 - Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
   (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
   cover the generator/artifact/client/tools logic directly.
-- Export/restore (M10) or hardening (M12) — still coming in Phase 1, just
+- Export/restore (M9) or hardening (M10) — still coming in Phase 1, just
   not built yet.
-- Periods/reconciliation-as-workflow (M9) or sub-books/consolidation
-  (M11) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
+- Periods/reconciliation-as-workflow (M11) or sub-books/consolidation
+  (M12) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
   Phase 1 has been in real use for a while; not because the design is
   incomplete.
 - Cross-browser/mobile rendering — the launcher and workflow artifacts are
@@ -275,4 +275,4 @@ like Part 4/5 verified the hand-built one.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M10.
+before moving on to M9.

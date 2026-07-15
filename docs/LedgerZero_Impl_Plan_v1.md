@@ -1,8 +1,8 @@
 # LedgerZero Implementation Plan v1
 
-Milestone plan for building `LedgerZero_Impl_Spec_v1.md`. The plan starts with a **walking skeleton**: authentication and authorization across all architectural components first (M1), since creating even the first book requires authN/Z in place. The accounting core then fills in behind that skeleton. Each milestone ends with passing tests and something demonstrable. Do not start a milestone until the previous one's exit criteria pass, **except** where the two phases below say otherwise. Spec section references are to the Impl Spec.
+Milestone plan for building `LedgerZero_Impl_Spec_v1.md`. The plan starts with a **walking skeleton**: authentication and authorization across all architectural components first (M1), since creating even the first book requires authN/Z in place. The accounting core then fills in behind that skeleton. Each milestone ends with passing tests and something demonstrable. Do not start a milestone until the previous one's exit criteria pass. Spec section references are to the Impl Spec.
 
-**Two delivery phases (Impl Spec Appendix A, resolution R2):** after M8 shipped, the user asked to defer M9 (periods-in-practice/reconciliation-as-workflow) and M11 (sub-books/consolidation) until Phase 1 is in real use — confirmed safe because nothing later in Phase 1 depends on either: period close/reopen and closed-period rejection already work end-to-end through the backend API and MCP primitives since M2/M4/M8, without needing a dedicated browser workflow; export/restore (M10) and hardening (M12) both operate on a single book regardless of whether sub-books ever exist. **Phase 1 — M1 through M8, then M10, then M12 — is the milestone sequence below in order**, skipping M9 and M11 where they'd otherwise fall; it is what the user runs real books on first. **Phase 2 — M9 and M11**, full content unchanged and un-renumbered, sits in its own section after M12: come back to it once Phase 1 has been in real use, not because the design is incomplete.
+**Two delivery phases (Impl Spec Appendix A, resolution R2):** after M8 shipped, the user asked to defer periods-in-practice/reconciliation-as-workflow and sub-books/consolidation until Phase 1 is in real use — confirmed safe because nothing else in Phase 1 depends on either: period close/reopen and closed-period rejection already work end-to-end through the backend API and MCP primitives since M2/M4/M8, without needing a dedicated browser workflow; export/restore and hardening both operate on a single book regardless of whether sub-books ever exist. **Phase 1 is M1 through M10 below, in order** — everything the user runs real books on first. **Phase 2 — M11 (periods/reconciliation) and M12 (sub-books/consolidation)** — sits in its own section at the end: come back to it once Phase 1 has been in real use, not because the design is incomplete. Renumbered when the phase split landed so Phase 1 reads as a clean, contiguous sequence; the milestones themselves are otherwise unchanged from when they were M9 and M11.
 
 Working rules for each milestone:
 
@@ -20,7 +20,7 @@ Working rules for each milestone:
 
 **Exit criteria:** clean clone builds everything; all (empty) test suites pass. **Met:** `./scripts/check.sh` passes on the user's machine.
 
-**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M12, which now only needs to extend them.
+**Delivered beyond plan:** `scripts/package.sh` builds a self-contained release tarball (binary + frontend + example config + deploy doc), and `docs/LedgerZero_Run_and_Deploy.md` documents local run, deployment rehearsal, monitoring, and remote deployment — both pulled forward from M10 (hardening and deployment), which now only needs to extend them.
 
 ## M1 — Walking skeleton: authentication & authorization ✅ DONE (2026-07-11)
 
@@ -43,7 +43,7 @@ All architectural components stand up here, doing the minimum real work: routing
 - `dev_login` provider for credential-free local development (spec §5.2; must be disabled on any non-local deployment).
 - `GET /api/health` liveness endpoint for basic monitoring (spec §7.1).
 
-**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M12.
+**Known M1 limitations (by design, resolved in later milestones):** users and sessions are in-memory — a restart logs everyone out; single instance only until M3 storage. No request logging/metrics/tracing until M10 (hardening and deployment).
 
 ## M2 — Domain model and engine core (in-memory) — implemented 2026-07-11, exit gate: local `./scripts/check.sh`
 
@@ -174,11 +174,9 @@ Raised by the user while reviewing M6: a book's encryption key and owner authori
 **Notes:**
 
 - `get_workflow_definition` reads `workflow.json`/`manifest.json` straight from the local dev artifact store rather than calling a backend endpoint — legitimate under Axiom 12 since dev artifacts are explicitly *not* book storage (Impl Spec §7.4), and "inspectable by authorized users" is exactly what this primitive does for the one developer identity in v1.
-- Sub-book, consolidation, and `explain_reconciliation_issue` primitives from spec §6.4's list are deliberately not implemented yet — those backend features don't exist until M9/M11, and a primitive with no endpoint to call would just be a stub pretending to work.
+- Sub-book, consolidation, and `explain_reconciliation_issue` primitives from spec §6.4's list are deliberately not implemented yet — those backend features don't exist until M11/M12, and a primitive with no endpoint to call would just be a stub pretending to work.
 
-*(M9 — periods in practice and reconciliation — deferred to Phase 2; see the end of this document. Nothing below depends on it: period close/reopen and closed-period rejection already work end-to-end since M2/M4/M8.)*
-
-## M10 — Export and restore
+## M9 — Export and restore
 
 - [ ] `export_book`: encrypted JSON bundle, reader-passphrase encryption, deployment references + hashes, snapshot cut under writer lock + ledger marker (spec §7.3, §4.3)
 - [ ] `restore_book`: wipe-and-replace, IDs and `book_id` preserved, RESTORE event, unavailable-workflow marking when artifacts don't match by id+hash
@@ -186,26 +184,24 @@ Raised by the user while reviewing M6: a book's encryption key and owner authori
 
 **Exit criteria:** a book moves to a new folder/deployment and keeps operating.
 
-*(M11 — sub-books and consolidation — deferred to Phase 2; see the end of this document. Nothing below depends on it: export/restore and hardening both operate on a single book regardless of whether sub-books ever exist.)*
-
-## M12 — Hardening and deployment
+## M10 — Hardening and deployment
 
 Partially pre-done during M0/M1: `scripts/package.sh` (release tarball) and `docs/LedgerZero_Run_and_Deploy.md` (local run, deployment rehearsal, monitoring signals, remote-deployment caveats) already exist; this milestone extends them.
 
 - [ ] Oracle Cloud VM deployment (systemd or equivalent) and on-premise instructions
 - [ ] MFA guidance, ingress restrictions for non-local deployments (spec §5.5)
 - [ ] Operational docs: bootstrap, open-book, backup/push, ownership transfer (incl. git-history caveat), restore runbook
-- [ ] Full test-suite pass + a scripted demo covering M4–M8 and M10 flows (M9/M11 excluded — Phase 2)
+- [ ] Full test-suite pass + a scripted demo covering M4–M9 flows
 
 **Exit criteria:** a fresh operator can install, bootstrap, and run the demo from docs alone.
 
-**Phase 1 exit criteria (the release the user runs real books on first):** M1–M8, M10, and M12 above all done and verified — everything except a dedicated reconciliation workflow and sub-books/consolidation, which are Phase 2 below.
+**Phase 1 exit criteria (the release the user runs real books on first):** M1–M10 above all done and verified — everything except a dedicated reconciliation workflow and sub-books/consolidation, which are Phase 2 below.
 
 ## Phase 2 — Periods/reconciliation and sub-books/consolidation (deferred until Phase 1 is in real use)
 
-Deferred by the user's request once M8 shipped (Impl Spec Appendix A, resolution R2) — the design is unchanged and complete below, just not scheduled yet. M9 and M11 keep their original milestone numbers rather than being renumbered, so every existing cross-reference to them elsewhere (Impl Spec, `mcp_server/`, `docs/LedgerZero_Manual_Verification.md`) stays accurate. Come back to this section once Phase 1 has been running with real books for a while.
+Deferred by the user's request once M8 shipped (Impl Spec Appendix A, resolution R2) — the design is unchanged and complete below, just not scheduled yet. Renumbered from their original M9/M11 to M11/M12 so Phase 1 above reads as a clean, contiguous M1–M10; every cross-reference elsewhere (Impl Spec, `mcp_server/`, `docs/LedgerZero_Manual_Verification.md`) was swept to match. Come back to this section once Phase 1 has been running with real books for a while.
 
-## M9 — Periods in practice and reconciliation
+## M11 — Periods in practice and reconciliation
 
 - [ ] `Reconcile bank accounts at EOP` workflow: compare projection vs expected balance, report discrepancies, corrections as new entries, result as administrative event (spec §6.6)
 - [ ] Period close/reopen exercised through workflows; closed-period posting rejected end-to-end
@@ -213,7 +209,7 @@ Deferred by the user's request once M8 shipped (Impl Spec Appendix A, resolution
 
 **Exit criteria:** full monthly cycle: post, reconcile, close, attempt late post (rejected), reopen, correct, re-close.
 
-## M11 — Sub-books and consolidation
+## M12 — Sub-books and consolidation
 
 - [ ] `create_sub_book` with owner choice and copy mode (all / none / owner-only; different owner → none) (spec §2.8)
 - [ ] SUB_BOOK_LINK events in both books; in-file link and rule projections
