@@ -262,8 +262,12 @@ like Part 4/5 verified the hand-built one.
 - Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
   (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
   cover the generator/artifact/client/tools logic directly.
-- Periods/reconciliation-as-workflow, export/restore, sub-books/
-  consolidation, or hardening — those are M9 onward and don't exist yet.
+- Export/restore (M10) or hardening (M12) — still coming in Phase 1, just
+  not built yet.
+- Periods/reconciliation-as-workflow (M9) or sub-books/consolidation
+  (M11) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
+  Phase 1 has been in real use for a while; not because the design is
+  incomplete.
 - Cross-browser/mobile rendering — the launcher and workflow artifacts are
   intentionally minimal, unstyled-beyond-basics HTML in this phase.
 
@@ -271,4 +275,4 @@ like Part 4/5 verified the hand-built one.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M9.
+before moving on to M10.

@@ -2,6 +2,10 @@
 
 This is the implementation baseline for the first build. It supersedes `LedgerZero_Spec.md` for implementation purposes; the original remains the vision/design document. Every contradiction and blocker identified in `LedgerZero_Spec_Gap_Analysis.md` is resolved here; Appendix A maps each gap to its resolution.
 
+## Delivery phases (resolution R2 — Appendix A)
+
+Everything in this document is the full v1 design; not all of it ships before the user starts running real books. **Phase 1** is the release the user operates as its first real user — single-book accounting core, hand-built and AI-generated workflows, export/restore, hardening/deployment (Impl Plan M1–M8, M10, M12). **Phase 2** — deferred until Phase 1 is in real use, not removed from scope — is periods-in-practice-as-a-workflow and reconciliation (Impl Plan M9) and sub-books/consolidation (Impl Plan M11). Nothing in Phase 1 depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8, reachable directly without a dedicated browser workflow; export/restore and hardening operate on one book regardless of whether sub-books ever exist. Sections describing Phase 2 features are marked inline; see the Impl Plan for the full milestone content, relocated there under "Phase 2."
+
 ## 1 Vision & Axioms
 
 Ledger Zero is a production-grade, AI-native accounting platform built from accounting first principles, derived from one axiom:
@@ -143,6 +147,8 @@ The single ledger records both accounting transactions and administrative events
 Rules: periods must not overlap within an entity; `entry_date` must fall inside an OPEN period of the entry's entity. Closing and re-opening are PERIOD_STATUS ledger events performed through authorized workflows (`close_period`, `reopen_period`). Re-opening-by-branching/reversal remains deferred.
 
 ### 2.8 AccountingBook and Sub-Books
+
+**Sub-book creation and consolidation are Phase 2 (Impl Plan M11, deferred — see "Delivery phases" above); the one-entity-per-book boundary below is Phase 1.**
 
 Unchanged in structure from the original spec (book_id, optional parent_book_id, one storage folder, one owner at bootstrap, ownership transfer re-encrypts). **Amended (Impl Plan M7, resolution R1):** the book is the storage, export, restore, bootstrap security, *and* accounting boundary — the two now coincide. Every book has exactly one entity, auto-created when the book is created (2.9); there is no API to create a second one. A book's encryption key, owner, and authority are all scoped to that one legal/accounting entity, so a key compromise or an owner's authority never spans more than one entity's books.
 
@@ -299,19 +305,19 @@ Unchanged from the original spec §7.2: generation flows user → MCP → Python
 
 ### 6.4 MCP primitives (v1)
 
-`generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition`, `create_role`, `assign_workflow_to_role`, `assign_role_to_user`, `create_accounting_book`, `create_sub_book`, `list_sub_books`, `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `create_period`, `close_period`, `reopen_period`, `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`, `explain_reconciliation_issue`. The set grows when a workflow needs a missing primitive; additions are recorded here. **Amended (Impl Plan M7):** no `create_entity` primitive — `create_accounting_book` creates the book's one entity automatically (§2.8, §2.9).
+`generate_workflow_definition`, `deploy_workflow_definition`, `list_workflows`, `get_workflow_definition`, `create_role`, `assign_workflow_to_role`, `assign_role_to_user`, `create_accounting_book`, `create_sub_book`, `list_sub_books`, `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `create_period`, `close_period`, `reopen_period`, `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`, `explain_reconciliation_issue`. The set grows when a workflow needs a missing primitive; additions are recorded here. **Amended (Impl Plan M7):** no `create_entity` primitive — `create_accounting_book` creates the book's one entity automatically (§2.8, §2.9). **Amended (Impl Plan M8, resolution R2):** everything through `reopen_period` above shipped in Phase 1; `create_sub_book`, `list_sub_books`, `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`, and `explain_reconciliation_issue` are Phase 2 (Impl Plan M9/M11, deferred) — no backend endpoint exists for them yet, so they are not exposed as MCP tools until their milestone ships.
 
 ### 6.5 Backend application API (v1)
 
 Authentication/authorization endpoints, plus:
 
-- Books: `open_book`, `create_accounting_book` (also creates the book's one entity, §2.9), `create_sub_book`, `list_sub_books`, `export_book`, `restore_book`
+- Books: `open_book`, `create_accounting_book` (also creates the book's one entity, §2.9), `export_book`, `restore_book`; `create_sub_book`/`list_sub_books` are Phase 2 (Impl Plan M11, deferred)
 - Discovery: `list_my_books` — the launcher's book picker (§7.1). The owner sees every book (as `list_books` already allows); any other signed-in user sees only books where they hold at least one workflow-granting role — never a raw enumeration they'd have to already know the id to request. Each result carries its `entity_id` directly (one per book, §2.8), so no separate entity-discovery call exists or is needed.
 - Reference: `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `update_account_metadata`, `deactivate_account`, `list_accounts`, `list_entities` (inspection only — always returns the book's one entity)
 - Ledger: `post_entry`, `reverse_entry`, `get_balance`, `list_entries`, `get_audit_log`, `record_price`, `list_prices`
 - Periods: `create_period`, `close_period`, `reopen_period`
 - Authorization: `create_role`, `assign_workflow_to_role`, `assign_role_to_user`
-- Consolidation: `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`
+- Consolidation (Phase 2, Impl Plan M11, deferred): `define_consolidation_rule`, `list_consolidation_rules`, `run_consolidation`
 
 All rules from the original spec §7.4 carry over verbatim: the backend API is the only runtime write authority; workflows run strictly in the browser; every workflow-originated request carries `book_id`, `entity_id`, `workflow_id`, `workflow_deployment_id`, client-generated `workflow_execution_id`, and authenticated `user_id`, all re-verified server-side; every mutation carries a client-generated UUID handled idempotently (with `IDEMPOTENCY_CONFLICT` on payload mismatch); no capability tokens — the backend re-checks context against server-side state.
 
@@ -320,10 +326,10 @@ All rules from the original spec §7.4 carry over verbatim: the backend API is t
 Carried over from the original spec §7.5 with these updates:
 
 - **Bootstrap flow**: fresh install per 5.3 → `create_accounting_book` (which also creates the book's one entity, §2.9 — there is no separate `Add an entity` step, Impl Plan M7) or `Open book` for an existing book → `Adding a workflow`. Finding a workflow to run is itself bootstrapped the same way: the launcher's book picker (`list_my_books`, §6.5) needs no deployed artifact and no prior knowledge of a `book_id` — it is how a non-owner, role-assigned user reaches `workflows/mine` at all (Impl Plan M6, simplified in M7 once a book's `entity_id` no longer needs its own discovery step).
-- **7.5.1 Recording startup expense** and **7.5.2 Manual bank transactions**: unchanged, except inputs reference resource types (not free-form units) and cross-unit entries carry recorded prices.
-- **7.5.3 EOP bank reconciliation**: unchanged; corrections are new reversal/adjusting entries; result recorded as an administrative event.
-- **7.5.4 Add a sub-book**: updated to require the child-owner choice and copy mode per 2.8; projections in-file, not JSON files.
-- **7.5.5 / 7.5.6 Consolidation rules and runs**: unchanged semantics, with pending-until-authorized behavior per 2.8.
+- **7.5.1 Recording startup expense** and **7.5.2 Manual bank transactions**: unchanged, except inputs reference resource types (not free-form units) and cross-unit entries carry recorded prices. Shipped in Phase 1 (Impl Plan M5, M8 — the latter as an AI-generated artifact, not hand-built).
+- **7.5.3 EOP bank reconciliation** (Phase 2, Impl Plan M9, deferred): unchanged design; corrections are new reversal/adjusting entries; result recorded as an administrative event. Period close/reopen themselves are not blocked on this — they are already reachable directly through the backend API and MCP primitives (Impl Plan M2/M4/M8) without a dedicated browser workflow.
+- **7.5.4 Add a sub-book** (Phase 2, Impl Plan M11, deferred): updated to require the child-owner choice and copy mode per 2.8; projections in-file, not JSON files.
+- **7.5.5 / 7.5.6 Consolidation rules and runs** (Phase 2, Impl Plan M11, deferred): unchanged semantics, with pending-until-authorized behavior per 2.8.
 - External brokerage import remains out of scope for phase 1.
 
 ## 7 Architecture & Operations
@@ -403,8 +409,9 @@ Gap references are to `LedgerZero_Spec_Gap_Analysis.md`.
 | B15 testing | Property/replay/idempotency/crash/API tests required (7.5) |
 | D1–D8 deferrals | Cross-server consolidation auth, book-level FX translation, consolidation scheduling beyond on-demand `run_consolidation`, containerization, year-end close, reporting tools, re-open-by-branching, brokerage import — all explicitly deferred |
 
-Post-implementation resolutions (found after M0–M6 were built, not in the original gap analysis):
+Post-implementation resolutions (found after M0–M8 were built, not in the original gap analysis):
 
 | # | Resolution |
 |----|----|
 | R1 | Multi-entity-per-book removed (Impl Plan M7): a book's encryption key and owner authority previously could span several legally distinct entities, which is a real security-boundary crossing, not just an implementation convenience — a key compromise or an owner's blanket authority reached every entity sharing the book. Every book now has exactly one entity, auto-created with `create_accounting_book`; `create_entity` is retired as a client-facing operation. Related legal entities (holding company/subsidiaries, one bookkeeper's several clients) already had a correct mechanism — separate books linked via `create_sub_book` and combined only through read-only, idempotent consolidation — so this removes a second, weaker path to the same outcome, not a capability (2.8, 2.9, 6.5, 6.6, 7.1). Also simplified the M6 launcher picker to a single book-selection step, since selecting a book now already determines its one entity.|
+| R2 | Delivery split into two phases after M8 shipped (raised by the user): Phase 1 (Impl Plan M1–M8, M10, M12) is what the user starts running real books on; Phase 2 (Impl Plan M9 — periods-in-practice/reconciliation-as-workflow, and M11 — sub-books/consolidation) is deferred until Phase 1 is in real use, not dropped from scope. Verified no Phase 1 milestone depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8 (reachable directly, without a dedicated browser workflow); export/restore (M10) and hardening (M12) both operate on one book regardless of whether sub-books ever exist. M9 and M11 keep their milestone numbers and full content, relocated to a "Phase 2" section at the end of the Impl Plan rather than renumbered, so every existing cross-reference to them (this document, `mcp_server/`, `docs/LedgerZero_Manual_Verification.md`) stays accurate as-is (2.8, 6.4, 6.5, 6.6, and the new "Delivery phases" note above §1).|
