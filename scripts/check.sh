@@ -37,7 +37,15 @@ fi
 
 if command -v python3 >/dev/null 2>&1; then
   step "Python: mcp_server tests"
-  (cd mcp_server && python3 -m unittest discover -s tests -v) || fail "python tests"
+  # mcp_server has real dependencies (mcp SDK, httpx) since Impl Plan M8 —
+  # isolated in a project-local venv rather than the system interpreter,
+  # since system pip on this machine (Homebrew) refuses global installs.
+  (
+    cd mcp_server \
+      && { [ -d .venv ] || python3 -m venv .venv; } \
+      && .venv/bin/pip install --quiet -e . \
+      && .venv/bin/python -m unittest discover -s tests -v
+  ) || fail "python tests"
 else
   fail "python3 not found"
 fi

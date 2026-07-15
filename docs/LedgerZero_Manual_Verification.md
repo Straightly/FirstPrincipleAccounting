@@ -1,8 +1,9 @@
-# LedgerZero Manual Verification (M0–M7)
+# LedgerZero Manual Verification (M0–M8)
 
 This is the human-in-the-loop counterpart to the automated test suite (70+
-tests across `engine/` and `backend/`, all passing via `./scripts/check.sh`).
-Automated tests prove the code does what it claims; this walkthrough is
+tests across `engine/`/`backend/` plus 25 more in `mcp_server/`, all
+passing via `./scripts/check.sh`). Automated tests prove the code does
+what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
 *you* want. It also doubles as an early draft of the "scripted demo" M12
 (hardening) calls for.
@@ -204,13 +205,65 @@ for 'admin_ping' ...`.
 
 ---
 
+## Part 7 — AI-generated workflow, no hand-edits (M8)
+
+M8 adds a second way to get a workflow deployed: instead of hand-writing
+the React artifact (as `demo_seed.sh` does for M5), a Python dev-time
+process generates it from a structured request and deploys it through the
+same backend API a human developer would use. This part drives that path
+yourself from a terminal, then verifies the result in the browser exactly
+like Part 4/5 verified the hand-built one.
+
+1. One-time setup, from the repo root:
+   ```sh
+   cd mcp_server
+   python3 -m venv .venv
+   .venv/bin/pip install -e .
+   ```
+2. With the server running (`cargo run -p ledgerzero-backend`), create a
+   fresh demo book and its supporting chart/accounts/period — the same
+   shape `demo_seed.sh` builds, but driven through the MCP admin
+   primitives themselves (`run-tool create_accounting_book`, then
+   `create_resource_type`, `create_chart`, `create_account` ×2 for a bank
+   account and an offset account, `create_period`). Each command prints
+   the id you need for the next one; see `mcp_server/README.md` for the
+   full command shapes.
+3. Generate the workflow: `run-tool generate_workflow_definition --json
+   '{...}'` with the field list from Impl Spec §7.5.2 (bank account,
+   transaction date, amount, direction, description, offset account,
+   optional reference) — this returns a `workflow_id` and the full
+   generated `app.js`/`index.html`, no LLM call needed (v1's "LLM
+   wrapping" is deterministic template generation).
+4. Deploy it: `run-tool deploy_workflow_definition --json '{"generated":
+   <output of step 3>, "book_id": "...", "entity_id": "..."}'` — this
+   writes the artifact to `dev_artifacts/workflows/<new id>/` and
+   registers the deployment, exactly like `POST
+   .../workflows/deploy` does for a hand-built one.
+5. Back in the browser: sign in as an employee assigned the auto-created
+   role (same `create_role`/`assign_role_to_user` pattern as Part 5,
+   here driven by `run-tool assign_role_to_user` instead of curl), select
+   the book, and the generated workflow's name appears in **My
+   workflows** — no different from a hand-built one.
+6. Run it. Post one **Deposit** and one **Withdrawal** against the same
+   two accounts, then check `GET /api/books/:id/accounts/:id/balance` on
+   the bank account: `debit_total` should reflect the deposit,
+   `credit_total` the withdrawal — proof the generated form's
+   direction-toggle logic swaps which account is debited correctly both
+   ways, not just on the happy path.
+7. Repeat Part 6.1's negative case against this workflow's URL, signed in
+   as the owner: same client-side warning, same server-side `403
+   UNAUTHORIZED_WORKFLOW` — the backend's authorization machinery treats a
+   generated artifact identically to a hand-built one.
+
 ## What you're *not* expected to check here
 
 - Anything in `engine/` or the storage/idempotency internals — that's what
   the 40+ engine tests are for (`cargo test -p ledgerzero-engine`).
-- The AI-generation path, periods/reconciliation-as-workflow, export/
-  restore, sub-books/consolidation, or hardening — those are M8 onward and
-  don't exist yet.
+- Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
+  (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
+  cover the generator/artifact/client/tools logic directly.
+- Periods/reconciliation-as-workflow, export/restore, sub-books/
+  consolidation, or hardening — those are M9 onward and don't exist yet.
 - Cross-browser/mobile rendering — the launcher and workflow artifacts are
   intentionally minimal, unstyled-beyond-basics HTML in this phase.
 
@@ -218,4 +271,4 @@ for 'admin_ping' ...`.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M8.
+before moving on to M9.

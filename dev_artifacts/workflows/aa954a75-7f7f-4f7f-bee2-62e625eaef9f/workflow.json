@@ -1,0 +1,34 @@
+{
+  "workflow_name": "Recording bank account transactions manually",
+  "description": "Records bank activity before bank-statement import or automated reconciliation exists (Impl Spec \u00a77.5.2).",
+  "steps": [
+    {
+      "kind": "form",
+      "collects": [
+        "Transaction date",
+        "Description",
+        "Amount",
+        "Direction",
+        "Bank account (account_id)",
+        "Offset account (account_id)",
+        "Reference / memo (optional)"
+      ]
+    },
+    {
+      "kind": "api_call",
+      "backend_api": "post_entry"
+    }
+  ],
+  "backend_api_calls": [
+    "post_entry"
+  ],
+  "required_inputs": {
+    "transactionDate": "date",
+    "description": "text",
+    "amount": "number",
+    "direction": "select",
+    "bankAccountId": "account",
+    "offsetAccountId": "account",
+    "reference": "text"
+  }
+}
