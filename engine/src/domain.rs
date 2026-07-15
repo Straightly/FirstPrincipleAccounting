@@ -329,6 +329,17 @@ pub enum EventPayload {
         role_id: Uuid,
         user_id: Uuid,
     },
+    /// Impl Spec §8.2 (Impl Plan M9): recorded once, immediately after a
+    /// restored book's imported event log has been replayed — the
+    /// audit-trail fact that operational history resumed here (Axiom 8),
+    /// not a domain object. `source_book_id` is normally equal to this
+    /// book's own id (restore preserves `book_id`), but is recorded
+    /// explicitly rather than assumed, since nothing else pins it down.
+    Restored {
+        source_book_id: Uuid,
+        exported_at: TimestampMs,
+        restored_event_count: usize,
+    },
 }
 
 impl EventPayload {
@@ -348,6 +359,7 @@ impl EventPayload {
             EventPayload::RoleCreated { .. }
             | EventPayload::WorkflowAssignedToRole { .. }
             | EventPayload::RoleAssignedToUser { .. } => EventType::RoleAssignment,
+            EventPayload::Restored { .. } => EventType::Restore,
         }
     }
 
@@ -369,6 +381,7 @@ impl EventPayload {
             EventPayload::RoleCreated { role } => role.role_id,
             EventPayload::WorkflowAssignedToRole { role_id, .. } => *role_id,
             EventPayload::RoleAssignedToUser { role_id, .. } => *role_id,
+            EventPayload::Restored { .. } => Uuid::nil(),
         }
     }
 }

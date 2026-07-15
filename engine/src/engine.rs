@@ -10,7 +10,7 @@
 use crate::amount::{Amount, Rational, SCALE};
 use crate::domain::*;
 use crate::error::{EngineError, ErrorCode};
-use crate::types::{Clock, Date, SystemClock};
+use crate::types::{Clock, Date, SystemClock, TimestampMs};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -408,6 +408,10 @@ impl EngineState {
                     .or_default()
                     .insert(*user_id);
             }
+            // Administrative marker only (Impl Plan M9) — nothing in
+            // EngineState represents "this book was restored," the fact
+            // lives solely in the log itself.
+            EventPayload::Restored { .. } => {}
         }
         self.log.push(record);
     }
@@ -567,6 +571,44 @@ impl AccountingEngine {
             actor,
             request,
             EventPayload::EntityCreated { entity },
+        ))
+    }
+
+    // -- restore (Impl Spec §8.2, Impl Plan M9) ------------------------------
+
+    /// Appends the one `Restored` marker for a freshly restored book,
+    /// immediately after its imported event log has already been replayed
+    /// into `self` via [`EngineState::replay`] (the caller builds `self`
+    /// from that replay before calling this). Uses the same
+    /// idempotency/record machinery as every other mutation — a fresh
+    /// restore simply has no prior record for this `op_id`, so
+    /// `check_idempotency` returns `None` and this proceeds normally.
+    pub fn record_restore(
+        &mut self,
+        op_id: Uuid,
+        actor: Uuid,
+        source_book_id: Uuid,
+        exported_at: TimestampMs,
+        restored_event_count: usize,
+    ) -> Result<Uuid, EngineError> {
+        let request = json!({
+            "op": "restore_book",
+            "source_book_id": source_book_id,
+            "exported_at": exported_at,
+            "restored_event_count": restored_event_count,
+        });
+        if let Some(done) = self.check_idempotency(op_id, &request)? {
+            return Ok(done);
+        }
+        Ok(self.record(
+            op_id,
+            actor,
+            request,
+            EventPayload::Restored {
+                source_book_id,
+                exported_at,
+                restored_event_count,
+            },
         ))
     }
 

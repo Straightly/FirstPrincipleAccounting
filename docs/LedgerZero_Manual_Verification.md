@@ -1,4 +1,4 @@
-# LedgerZero Manual Verification (M0–M8)
+# LedgerZero Manual Verification (M0–M9)
 
 This is the human-in-the-loop counterpart to the automated test suite (70+
 tests across `engine/`/`backend/` plus 25 more in `mcp_server/`, all
@@ -6,7 +6,7 @@ passing via `./scripts/check.sh`). Automated tests prove the code does
 what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
 *you* want. It also doubles as an early draft of the "scripted demo" M10
-(hardening) calls for.
+(hardening) calls for — now the last milestone before Phase 1 ships.
 
 Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
 fresh demo book every time (a new random id), so nothing you do here can
@@ -255,6 +255,72 @@ like Part 4/5 verified the hand-built one.
    UNAUTHORIZED_WORKFLOW` — the backend's authorization machinery treats a
    generated artifact identically to a hand-built one.
 
+## Part 8 — Export and restore (M9)
+
+This is the closest thing to a "does my data actually survive" test in the
+whole walkthrough: take a real book, export it to an encrypted bundle
+protected by a passphrase of your choosing (independent of the book's own
+passphrase), wipe the book's storage key by restoring under a *different*
+passphrase, and confirm the book keeps operating exactly as before.
+
+1. With the server running, seed a book the same way Part 2 does, or reuse
+   an existing one — note its `book_id` and one account id (`demo_seed.sh`
+   prints both).
+2. Check a balance before export, so you have something to compare
+   against:
+   ```sh
+   BOOK_ID=<your book_id>
+   ACCOUNT_ID=<your account_id>
+   COOKIE=$(mktemp)
+   curl -s -c "$COOKIE" -H 'Content-Type: application/json' \
+     -d '{"email":"zhian.job@gmail.com"}' \
+     http://localhost:8080/api/auth/dev-login >/dev/null
+   curl -s -b "$COOKIE" \
+     "http://localhost:8080/api/books/$BOOK_ID/accounts/$ACCOUNT_ID/balance"
+   ```
+3. Export it:
+   ```sh
+   curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d '{"reader_passphrase":"a passphrase just for this export"}' \
+     "http://localhost:8080/api/books/$BOOK_ID/export" > /tmp/bundle.json
+   ```
+   Open `/tmp/bundle.json` — you'll see `book_id`, `exported_at`,
+   `event_count`, and Argon2id parameters in plain JSON, but the actual
+   ledger content (`payload_hex`) is opaque without the reader passphrase
+   you just chose.
+4. Restore it — always targets the bundle's own `book_id`, never a new
+   one, and always succeeds whether or not a book currently lives there
+   (wipe-and-replace is the point):
+   ```sh
+   python3 -c "
+   import json
+   bundle = json.load(open('/tmp/bundle.json'))
+   print(json.dumps({
+       'op_id': '$(python3 -c "import uuid; print(uuid.uuid4())")',
+       'bundle': bundle,
+       'reader_passphrase': 'a passphrase just for this export',
+       'storage_passphrase': 'a brand new operational passphrase',
+   }))
+   " > /tmp/restore_body.json
+   curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d @/tmp/restore_body.json \
+     http://localhost:8080/api/books/restore
+   ```
+   Expect the same `book_id`/`name`/`entity_id` back.
+5. Check the same balance again — it should be unchanged — then post a new
+   entry through it. It should succeed: a restored book is a live
+   operational starting point, not a read-only snapshot.
+6. The real proof key rotation happened, not just that the API returned
+   200: **stop the server (Ctrl-C) and start it again.** Try opening the
+   book with its *original* passphrase — expect `401 WRONG_PASSPHRASE`.
+   Then open it with the *new* `storage_passphrase` from step 4 — expect
+   success, with the balance from step 5.
+7. Check `GET /api/books/:id/audit-log` — you should see a `RESTORE`
+   event sitting in the log exactly where the restore happened, between
+   whatever came before and whatever you posted after. The restore itself
+   is a permanent, visible ledger fact, not something that happened
+   "outside" the book's history.
+
 ## What you're *not* expected to check here
 
 - Anything in `engine/` or the storage/idempotency internals — that's what
@@ -262,8 +328,7 @@ like Part 4/5 verified the hand-built one.
 - Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
   (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
   cover the generator/artifact/client/tools logic directly.
-- Export/restore (M9) or hardening (M10) — still coming in Phase 1, just
-  not built yet.
+- Hardening (M10) — the last milestone before Phase 1 ships, still coming.
 - Periods/reconciliation-as-workflow (M11) or sub-books/consolidation
   (M12) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
   Phase 1 has been in real use for a while; not because the design is
@@ -275,4 +340,4 @@ like Part 4/5 verified the hand-built one.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M9.
+before moving on to M10.

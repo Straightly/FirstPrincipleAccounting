@@ -10,7 +10,9 @@
 
 use crate::error::ApiError;
 use axum::http::StatusCode;
-use ledgerzero_engine::storage::{BookStorage, FileBookStore, PassphraseKeyProvider, StorageError};
+use ledgerzero_engine::storage::{
+    self, BookStorage, ExportBundle, FileBookStore, PassphraseKeyProvider, StorageError,
+};
 use ledgerzero_engine::types::SystemClock;
 use ledgerzero_engine::{AccountingEngine, EngineError, EngineState};
 use serde::{Deserialize, Serialize};
@@ -224,6 +226,97 @@ impl BooksRegistry {
     /// opened it.
     pub async fn list_open(&self) -> Vec<Arc<OpenBook>> {
         self.open.read().await.values().cloned().collect()
+    }
+
+    /// Bootstrap-owner-gated (Impl Spec §8.2, Impl Plan M9): a read-only
+    /// snapshot of the open book's whole event log, re-encrypted for
+    /// `reader_passphrase` — independent of the book's own storage
+    /// passphrase, so a leaked export never leaks operational access.
+    /// Appends nothing to the source book; "reconciled before export" is a
+    /// no-op because the engine never accepts an unbalanced state. Takes
+    /// an already-resolved `OpenBook` (the caller already did the
+    /// authenticate/authorize/get-open dance via `book_context`), mirroring
+    /// `mutate`'s signature rather than re-resolving it here.
+    pub async fn export(
+        &self,
+        open_book: &OpenBook,
+        reader_passphrase: &str,
+    ) -> Result<ExportBundle, ApiError> {
+        let engine = open_book.engine.read().await;
+        storage::create_export_bundle(
+            open_book.meta.book_id,
+            engine.audit_log(),
+            now_ms(),
+            reader_passphrase,
+        )
+        .map_err(storage_err)
+    }
+
+    /// Bootstrap-owner-gated (Impl Spec §8.2, Impl Plan M9): wipe-and-replace
+    /// restore. The target location is `bundle.book_id` itself, never a
+    /// caller-supplied id — restoring preserves the logical `book_id`
+    /// (§8.2), so there is nothing else it could sensibly be. Decrypts the
+    /// bundle with `reader_passphrase`, replays it to rebuild engine state
+    /// (this doubles as an integrity check — a corrupt or tampered log
+    /// fails replay before anything is written), appends one `Restored`
+    /// marker (Axiom 8: resuming operational history here is itself an
+    /// auditable fact), then persists the whole thing under a freshly
+    /// generated key wrapped for `storage_passphrase` — restore never
+    /// reuses the exported book's old storage key. The restored book is
+    /// opened immediately (a live operational starting point, §8.2), and
+    /// evicts any prior in-memory copy at this book_id.
+    pub async fn restore(
+        &self,
+        op_id: Uuid,
+        actor_user_id: Uuid,
+        bundle: &ExportBundle,
+        reader_passphrase: &str,
+        storage_passphrase: &str,
+        owner_email: &str,
+    ) -> Result<BookMeta, ApiError> {
+        let events = storage::open_export_bundle(bundle, reader_passphrase).map_err(storage_err)?;
+        let state = EngineState::replay(bundle.book_id, &events)
+            .map_err(|e| ApiError::internal(format!("export bundle failed to replay: {e}")))?;
+        let mut engine = AccountingEngine::from_state(state, Box::new(SystemClock));
+        engine.record_restore(
+            op_id,
+            actor_user_id,
+            bundle.book_id,
+            bundle.exported_at,
+            bundle.event_count,
+        )?;
+
+        let entity = engine.list_entities().into_iter().next().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_INPUT",
+                "export bundle has no entity — not a valid book export",
+            )
+        })?;
+        let entity_id = entity.entity_id;
+        let name = entity.name.clone();
+
+        let dir = self.book_dir(bundle.book_id);
+        let provider = PassphraseKeyProvider::new(storage_passphrase);
+        let store = FileBookStore::restore(&dir, &provider, engine.audit_log())
+            .await
+            .map_err(storage_err)?;
+
+        let meta = BookMeta {
+            book_id: bundle.book_id,
+            name,
+            owner_email: owner_email.to_string(),
+            created_at_ms: now_ms(),
+            entity_id,
+        };
+        write_meta(&dir, &meta).await?;
+        let open_book = Arc::new(OpenBook {
+            meta: meta.clone(),
+            engine: RwLock::new(engine),
+            store,
+        });
+        self.open.write().await.insert(bundle.book_id, open_book);
+        Ok(meta)
     }
 }
 

@@ -165,15 +165,25 @@ impl PassphraseKeyProvider {
         salt: &[u8],
         profile: Argon2Profile,
     ) -> Result<[u8; 32], StorageError> {
-        let params = Params::new(profile.m_cost_kib, profile.t_cost, profile.p_cost, Some(32))
-            .map_err(|e| StorageError::Crypto(format!("bad argon2 params: {e}")))?;
-        let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        let mut out = [0u8; 32];
-        argon2
-            .hash_password_into(self.passphrase.as_bytes(), salt, &mut out)
-            .map_err(|e| StorageError::Crypto(format!("argon2 derivation failed: {e}")))?;
-        Ok(out)
+        derive_key(&self.passphrase, salt, profile)
     }
+}
+
+/// Argon2id key derivation shared by book-key wrapping and export-bundle
+/// encryption (Impl Plan M9) — same KDF, different purposes.
+fn derive_key(
+    passphrase: &str,
+    salt: &[u8],
+    profile: Argon2Profile,
+) -> Result<[u8; 32], StorageError> {
+    let params = Params::new(profile.m_cost_kib, profile.t_cost, profile.p_cost, Some(32))
+        .map_err(|e| StorageError::Crypto(format!("bad argon2 params: {e}")))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut out = [0u8; 32];
+    argon2
+        .hash_password_into(passphrase.as_bytes(), salt, &mut out)
+        .map_err(|e| StorageError::Crypto(format!("argon2 derivation failed: {e}")))?;
+    Ok(out)
 }
 
 impl BookKeyProvider for PassphraseKeyProvider {
@@ -270,6 +280,98 @@ fn decrypt_events(
         StorageError::Crypto("book decryption failed (wrong key or corrupt file)".into())
     })?;
     serde_json::from_slice(&plaintext).map_err(|e| StorageError::Corrupt(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Export and restore — Impl Spec §7.3/§8.2, Impl Plan M9
+// ---------------------------------------------------------------------------
+
+pub const EXPORT_BUNDLE_VERSION: u32 = 1;
+
+/// A portable, encrypted export (Impl Spec §8.2): the whole event log,
+/// re-encrypted for a reader passphrase independent of the book's own
+/// storage key — leaking a bundle never leaks the operational passphrase,
+/// and the export is fully self-describing (own KDF params/salt) so it can
+/// be decrypted anywhere, not just against the source book's keystore.
+/// `book_id`/`exported_at`/`event_count` are plaintext — the "ledger
+/// marker" proving what was captured, inspectable without the passphrase;
+/// the payload's own AEAD tag is the integrity guarantee, so no separate
+/// checksum is needed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportBundle {
+    pub version: u32,
+    pub book_id: Uuid,
+    pub exported_at: crate::types::TimestampMs,
+    pub event_count: usize,
+    pub kdf: String,
+    pub m_cost_kib: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    pub salt_hex: String,
+    pub payload_hex: String,
+}
+
+/// Encrypts `events` for `reader_passphrase` into a self-contained bundle.
+/// Read-only over the source book — appends nothing to its log (Impl Spec
+/// §8.2: "reconciled before export" is a no-op since the engine never
+/// accepts an unbalanced state, so there is nothing to check or mutate
+/// here beyond taking a consistent snapshot, which is the caller's job via
+/// whatever lock already serializes against concurrent mutation).
+pub fn create_export_bundle(
+    book_id: Uuid,
+    events: &[EventRecord],
+    exported_at: crate::types::TimestampMs,
+    reader_passphrase: &str,
+) -> Result<ExportBundle, StorageError> {
+    let profile = Argon2Profile::PRODUCTION;
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let export_key = derive_key(reader_passphrase, &salt, profile)?;
+    let payload = encrypt_events(&export_key, events)?;
+    Ok(ExportBundle {
+        version: EXPORT_BUNDLE_VERSION,
+        book_id,
+        exported_at,
+        event_count: events.len(),
+        kdf: "argon2id".into(),
+        m_cost_kib: profile.m_cost_kib,
+        t_cost: profile.t_cost,
+        p_cost: profile.p_cost,
+        salt_hex: to_hex(&salt),
+        payload_hex: to_hex(&payload),
+    })
+}
+
+/// Decrypts a bundle back into its event log. A wrong `reader_passphrase`
+/// surfaces as `StorageError::Crypto`, exactly like a wrong book
+/// passphrase does for `FileBookStore::open`.
+pub fn open_export_bundle(
+    bundle: &ExportBundle,
+    reader_passphrase: &str,
+) -> Result<Vec<EventRecord>, StorageError> {
+    if bundle.kdf != "argon2id" {
+        return Err(StorageError::Corrupt(format!(
+            "unsupported export kdf {}",
+            bundle.kdf
+        )));
+    }
+    let salt = from_hex(&bundle.salt_hex)?;
+    let profile = Argon2Profile {
+        m_cost_kib: bundle.m_cost_kib,
+        t_cost: bundle.t_cost,
+        p_cost: bundle.p_cost,
+    };
+    let export_key = derive_key(reader_passphrase, &salt, profile)?;
+    let payload = from_hex(&bundle.payload_hex)?;
+    let events = decrypt_events(&export_key, &payload)?;
+    if events.len() != bundle.event_count {
+        return Err(StorageError::Corrupt(format!(
+            "export bundle claims {} events but decrypted {}",
+            bundle.event_count,
+            events.len()
+        )));
+    }
+    Ok(events)
 }
 
 // ---------------------------------------------------------------------------
@@ -395,17 +497,24 @@ impl FileBookStore {
         &self.dir
     }
 
-    /// Bootstraps a brand-new book folder: random book key wrapped for the
-    /// given key provider, an empty encrypted event log, and a fresh backup
-    /// git repository with an initial commit.
-    pub async fn create(
+    /// Writes a fresh book folder seeded with `events`: random book key
+    /// wrapped for `key_provider`, an encrypted event log, and an
+    /// initialized backup git repo (idempotent — a no-op if `.git` already
+    /// exists, so restoring into a location with prior backup history
+    /// keeps it, per §3.3's "backup, not source of truth" framing). Shared
+    /// by `create` (refuses an existing book) and `restore` (always
+    /// allowed — wipe-and-replace is the point, Impl Spec §8.2).
+    async fn write_fresh(
         dir: &Path,
         key_provider: &dyn BookKeyProvider,
+        events: &[EventRecord],
+        refuse_if_exists: bool,
     ) -> Result<FileBookStore, StorageError> {
         tokio::fs::create_dir_all(dir).await?;
-        if tokio::fs::try_exists(dir.join(DATA_FILE))
-            .await
-            .unwrap_or(false)
+        if refuse_if_exists
+            && tokio::fs::try_exists(dir.join(DATA_FILE))
+                .await
+                .unwrap_or(false)
         {
             return Err(StorageError::Corrupt(
                 "a book already exists in this folder".into(),
@@ -423,12 +532,46 @@ impl FileBookStore {
             dir: dir.to_path_buf(),
             book_key,
         };
-        let empty: Vec<EventRecord> = Vec::new();
-        let encrypted = encrypt_events(&store.book_key, &empty)?;
+        let encrypted = encrypt_events(&store.book_key, events)?;
         atomic_write(&store.dir.join(DATA_FILE), &encrypted).await?;
+        Ok(store)
+    }
 
+    /// Bootstraps a brand-new book folder: random book key wrapped for the
+    /// given key provider, an empty encrypted event log, and a fresh backup
+    /// git repository with an initial commit.
+    pub async fn create(
+        dir: &Path,
+        key_provider: &dyn BookKeyProvider,
+    ) -> Result<FileBookStore, StorageError> {
+        let store = Self::write_fresh(dir, key_provider, &[], true).await?;
         git_init(&store.dir).await?;
         git_commit(&store.dir, "book created (0 events)").await?;
+        Ok(store)
+    }
+
+    /// Wipe-and-replace restore (Impl Spec §8.2, Impl Plan M9): unlike
+    /// `create`, always allowed regardless of whether a book already
+    /// exists at `dir` — a damaged book location being intentionally
+    /// replaced is an explicit supported case, not an error. Seeds the
+    /// fresh log with `events` (the export's decrypted log plus the
+    /// caller's own `Restored` marker) under a freshly generated book key,
+    /// wrapped for `key_provider` — restoring never reuses the exported
+    /// book's old key, since the export itself was never re-encrypted with
+    /// it (Impl Spec §8.2: "does not transfer the book key between
+    /// users").
+    pub async fn restore(
+        dir: &Path,
+        key_provider: &dyn BookKeyProvider,
+        events: &[EventRecord],
+    ) -> Result<FileBookStore, StorageError> {
+        let store = Self::write_fresh(dir, key_provider, events, false).await?;
+        git_init(&store.dir).await?;
+        git_commit(
+            &store.dir,
+            &format!("book restored ({} events)", events.len()),
+        )
+        .await?;
         Ok(store)
     }
 

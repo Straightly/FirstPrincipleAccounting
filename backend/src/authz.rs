@@ -20,6 +20,11 @@ pub enum Action {
     /// Spec §5.3). Workflow-scoped, per-book authorization replaces this
     /// blanket check once roles and workflow deployments exist.
     BookApi,
+    /// Impl Plan M9: wipe-and-replace restore into a book_id determined by
+    /// the export bundle itself, not the caller — same lifecycle-authority
+    /// tier as creating or opening a book, not `BookApi` (the book being
+    /// restored need not already be open, or exist at all yet).
+    RestoreBook,
     AdminPing,
 }
 
@@ -30,16 +35,18 @@ impl Action {
             Action::OpenBook => "open_book",
             Action::ListBooks => "list_books",
             Action::BookApi => "book_api",
+            Action::RestoreBook => "restore_book",
             Action::AdminPing => "admin_ping",
         }
     }
 }
 
-const OWNER_ACTIONS: [Action; 5] = [
+const OWNER_ACTIONS: [Action; 6] = [
     Action::CreateAccountingBook,
     Action::OpenBook,
     Action::ListBooks,
     Action::BookApi,
+    Action::RestoreBook,
     Action::AdminPing,
 ];
 
