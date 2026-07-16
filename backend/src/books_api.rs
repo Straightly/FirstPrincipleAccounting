@@ -165,81 +165,6 @@ pub async fn open_book(
     }))
 }
 
-#[derive(Deserialize)]
-pub struct ExportBookRequest {
-    pub reader_passphrase: String,
-}
-
-/// POST /api/books/:book_id/export — bootstrap-owner-gated, requires the
-/// book already open (Impl Spec §8.2, Impl Plan M9). Returns the whole
-/// encrypted bundle directly in the response body; re-encrypted for
-/// `reader_passphrase`, independent of the book's own storage passphrase.
-pub async fn export_book(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Path(book_id): Path<Uuid>,
-    Json(body): Json<ExportBookRequest>,
-) -> Result<Json<ledgerzero_engine::storage::ExportBundle>, ApiError> {
-    let (_, open_book) = book_context(&state, &headers, book_id).await?;
-    let bundle = state
-        .books
-        .export(&open_book, &body.reader_passphrase)
-        .await?;
-    Ok(Json(bundle))
-}
-
-#[derive(Deserialize)]
-pub struct RestoreBookRequest {
-    pub op_id: Uuid,
-    pub bundle: ledgerzero_engine::storage::ExportBundle,
-    pub reader_passphrase: String,
-    pub storage_passphrase: String,
-}
-
-/// POST /api/books/restore — bootstrap-owner-gated (Impl Spec §8.2, Impl
-/// Plan M9). The target book_id comes from `bundle.book_id`, never a
-/// caller-supplied one — restore preserves the logical book_id, so there's
-/// nothing else it could sensibly be. Wipe-and-replace: allowed whether or
-/// not a book already exists at that id, intentionally — a damaged
-/// location being replaced is the point, not an error case.
-pub async fn restore_book(
-    State(state): State<SharedState>,
-    headers: HeaderMap,
-    Json(body): Json<RestoreBookRequest>,
-) -> Result<Json<BookResponse>, ApiError> {
-    let user = crate::auth::current_user(&state, &headers)?;
-    if let Err(err) = state.authz.authorize(&user, Action::RestoreBook) {
-        state.audit.record(
-            "authorization",
-            &user.email,
-            "denied",
-            "restore_book requires bootstrap owner",
-        );
-        return Err(err);
-    }
-    if body.storage_passphrase.len() < 8 {
-        return Err(ApiError::invalid_input(
-            "storage_passphrase must be at least 8 characters",
-        ));
-    }
-    let meta = state
-        .books
-        .restore(
-            body.op_id,
-            user.user_id,
-            &body.bundle,
-            &body.reader_passphrase,
-            &body.storage_passphrase,
-            &user.email,
-        )
-        .await?;
-    Ok(Json(BookResponse {
-        book_id: meta.book_id,
-        name: meta.name,
-        entity_id: meta.entity_id,
-    }))
-}
-
 /// GET /api/books — every book folder on disk, open or not.
 pub async fn list_books(
     State(state): State<SharedState>,
@@ -724,65 +649,21 @@ pub async fn deploy_workflow(
 
 /// GET /api/books/:book_id/workflows — every deployed workflow in the
 /// entity (admin view; owner-gated).
-/// A `WorkflowDefinition` plus whether its dev artifact is actually present
-/// and unmodified on disk right now (Impl Spec §8.2, Impl Plan M9):
-/// restoring a book only restores its ledger, not the dev artifact store,
-/// so a restored deployment whose artifact hasn't also been restored or
-/// redeployed must be discoverable-but-marked-unavailable rather than
-/// silently offered as runnable. Computed fresh on every read, not stored
-/// — an artifact that reappears (restored/redeployed later) becomes
-/// available again automatically, with nothing to reverse.
-#[derive(Serialize)]
-pub struct WorkflowSummary {
-    #[serde(flatten)]
-    pub definition: WorkflowDefinition,
-    pub artifact_available: bool,
-}
-
-/// Re-hashes the deployment's dev artifact from disk and compares against
-/// the hashes recorded at deploy time — the same identity check
-/// `deploy_workflow` itself relies on (Impl Spec §7.4), reused here rather
-/// than reimplemented.
-async fn artifact_available(dev_artifacts_dir: &str, definition: &WorkflowDefinition) -> bool {
-    let dir =
-        crate::dev_artifacts::workflow_dir(dev_artifacts_dir, definition.workflow_deployment_id);
-    match crate::dev_artifacts::hash_artifact(&dir).await {
-        Ok(hashed) => {
-            hashed.manifest_hash == definition.manifest_hash
-                && hashed.code_hash == definition.code_hash
-        }
-        Err(_) => false,
-    }
-}
-
-async fn summarize_workflows(
-    dev_artifacts_dir: &str,
-    definitions: Vec<&WorkflowDefinition>,
-) -> Vec<WorkflowSummary> {
-    let mut out = Vec::with_capacity(definitions.len());
-    for definition in definitions {
-        out.push(WorkflowSummary {
-            artifact_available: artifact_available(dev_artifacts_dir, definition).await,
-            definition: definition.clone(),
-        });
-    }
-    out
-}
-
 pub async fn list_workflows(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Query(filter): Query<EntityFilter>,
-) -> Result<Json<Vec<WorkflowSummary>>, ApiError> {
+) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
     let (_, open_book) = book_context(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
-    let summaries = summarize_workflows(
-        &state.config.dev_artifacts_dir,
-        engine.list_workflows(filter.entity_id),
-    )
-    .await;
-    Ok(Json(summaries))
+    Ok(Json(
+        engine
+            .list_workflows(filter.entity_id)
+            .into_iter()
+            .cloned()
+            .collect(),
+    ))
 }
 
 /// GET /api/books/:book_id/workflows/mine — the launcher's workflow menu
@@ -794,15 +675,16 @@ pub async fn my_workflows(
     headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Query(filter): Query<EntityFilter>,
-) -> Result<Json<Vec<WorkflowSummary>>, ApiError> {
+) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
     let (user, open_book) = open_book_for_any_user(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
-    let summaries = summarize_workflows(
-        &state.config.dev_artifacts_dir,
-        engine.workflows_authorized_for_user(user.user_id, filter.entity_id),
-    )
-    .await;
-    Ok(Json(summaries))
+    Ok(Json(
+        engine
+            .workflows_authorized_for_user(user.user_id, filter.entity_id)
+            .into_iter()
+            .cloned()
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
