@@ -1,12 +1,13 @@
-# LedgerZero Manual Verification (M0–M9)
+# LedgerZero Manual Verification (M0–M10, Phase 1 complete)
 
 This is the human-in-the-loop counterpart to the automated test suite (70+
 tests across `engine/`/`backend/` plus 25 more in `mcp_server/`, all
 passing via `./scripts/check.sh`). Automated tests prove the code does
 what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
-*you* want. It also doubles as an early draft of the "scripted demo" M10
-(hardening) calls for — now the last milestone before Phase 1 ships.
+*you* want. It also served as the scripted-demo evidence M10 (hardening)
+called for — see `docs/LedgerZero_Run_and_Deploy.md` for deployment,
+monitoring, and the operational runbook M10 added.
 
 Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
 fresh demo book every time (a new random id), so nothing you do here can
@@ -342,7 +343,8 @@ who shouldn't have ongoing access.)
 - Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
   (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
   cover the generator/artifact/client/tools logic directly.
-- Hardening (M10) — the last milestone before Phase 1 ships, still coming.
+- Deployment/ops itself (M10) — that's `docs/LedgerZero_Run_and_Deploy.md`,
+  not this document; Phase 1 is now complete.
 - Periods/reconciliation-as-workflow (M11) or sub-books/consolidation
   (M12) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
   Phase 1 has been in real use for a while; not because the design is
@@ -353,5 +355,4 @@ who shouldn't have ongoing access.)
 ## If something doesn't match this document
 
 That's exactly what this exercise is for — tell me what you saw instead
-and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M10.
+and we'll figure out whether it's a bug, a stale doc, or a misunderstanding.

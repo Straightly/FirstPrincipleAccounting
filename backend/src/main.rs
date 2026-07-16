@@ -10,6 +10,17 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
+    // Impl Plan M10 (hardening): structured request logging, off by default
+    // in tests/tools since it only activates via RUST_LOG. `info` covers the
+    // one line per request emitted in app.rs; `debug` adds framework-level
+    // detail. Metrics/tracing (OpenTelemetry) remain deferred beyond v1.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "server.config.toml".to_string());

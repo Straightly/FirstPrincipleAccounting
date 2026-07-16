@@ -9,7 +9,9 @@ use crate::state::SharedState;
 use axum::routing::{get, patch, post, put};
 use axum::Router;
 use std::path::Path;
+use std::time::Duration;
 use tower_http::services::{ServeDir, ServeFile};
+use tower_http::trace::TraceLayer;
 
 pub fn build_router(state: SharedState) -> Router {
     let api = Router::new()
@@ -117,9 +119,23 @@ pub fn build_router(state: SharedState) -> Router {
     let workflows_dir = Path::new(&state.config.dev_artifacts_dir).join("workflows");
     let workflows_service = ServeDir::new(&workflows_dir);
 
+    // Impl Plan M10 (hardening): method/path/status/latency only — never
+    // headers or bodies, so session tokens, cookies, and passphrases in
+    // request payloads (login, open_book) never reach the log stream.
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|request: &axum::extract::Request| {
+            tracing::info_span!("request", method = %request.method(), uri = %request.uri())
+        })
+        .on_response(
+            |response: &axum::response::Response, latency: Duration, _span: &tracing::Span| {
+                tracing::info!(status = %response.status(), latency_ms = %latency.as_millis(), "done");
+            },
+        );
+
     Router::new()
         .nest("/api", api)
         .nest_service("/workflows", workflows_service)
         .with_state(state)
         .fallback_service(static_service)
+        .layer(trace_layer)
 }

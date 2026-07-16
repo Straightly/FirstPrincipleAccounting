@@ -1,0 +1,43 @@
+# LedgerZero systemd unit (Impl Plan M10 — hardening and deployment).
+#
+# Copy to /etc/systemd/system/ledgerzero.service on the target machine and
+# edit the paths/user below to match where you unpacked the packaged
+# tarball (docs/LedgerZero_Run_and_Deploy.md §5/§6). Then:
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ledgerzero
+#   sudo systemctl status ledgerzero
+#   journalctl -u ledgerzero -f            # follow the request log (M10)
+#
+# RUST_LOG=info is what turns on the per-request logging added in M10
+# (method/path/status/latency only — never headers, bodies, or passphrases,
+# see backend/src/app.rs). Omit it, or set RUST_LOG=warn, for a quieter log.
+
+[Unit]
+Description=LedgerZero backend
+After=network.target
+
+[Service]
+Type=simple
+# A dedicated, unprivileged user — never run this as root.
+User=ledgerzero
+Group=ledgerzero
+# Directory the packaged tarball was extracted into (docs/LedgerZero_Run_and_Deploy.md).
+# The example config's relative paths (./frontend/dist, ./books, etc.) resolve
+# from here, so WorkingDirectory must match where server.config.toml lives.
+WorkingDirectory=/opt/ledgerzero
+ExecStart=/opt/ledgerzero/ledgerzero-backend /opt/ledgerzero/server.config.toml
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=2
+
+# Light sandboxing: the service only ever needs to read/write its own
+# directory (books_dir, dev_artifacts_dir, ops_audit_log all live under
+# WorkingDirectory in the example config) and listen on one port.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ledgerzero
+
+[Install]
+WantedBy=multi-user.target
