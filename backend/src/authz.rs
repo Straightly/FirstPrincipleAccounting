@@ -20,6 +20,19 @@ pub enum Action {
     /// Spec §5.3). Workflow-scoped, per-book authorization replaces this
     /// blanket check once roles and workflow deployments exist.
     BookApi,
+    /// Impl Plan M9: releases a book from the running process's in-memory
+    /// open-books map. Bootstrap-owner-gated directly, like `OpenBook` —
+    /// may need to act on a book that isn't necessarily open.
+    CloseBook,
+    /// Impl Plan M9: copies a book's already-encrypted files verbatim to an
+    /// operator-chosen filesystem location — no decryption, so this needs
+    /// no book-scoped context beyond the id itself.
+    BackupBook,
+    /// Impl Plan M9: copies a book's files back from a location, id read
+    /// from the location's own plaintext `book.json`. Bootstrap-owner-gated
+    /// directly, like `CreateAccountingBook`/`OpenBook` — the target book
+    /// need not already exist, let alone be open.
+    RestoreBook,
     AdminPing,
 }
 
@@ -30,16 +43,22 @@ impl Action {
             Action::OpenBook => "open_book",
             Action::ListBooks => "list_books",
             Action::BookApi => "book_api",
+            Action::CloseBook => "close_book",
+            Action::BackupBook => "backup_book",
+            Action::RestoreBook => "restore_book",
             Action::AdminPing => "admin_ping",
         }
     }
 }
 
-const OWNER_ACTIONS: [Action; 5] = [
+const OWNER_ACTIONS: [Action; 8] = [
     Action::CreateAccountingBook,
     Action::OpenBook,
     Action::ListBooks,
     Action::BookApi,
+    Action::CloseBook,
+    Action::BackupBook,
+    Action::RestoreBook,
     Action::AdminPing,
 ];
 

@@ -1,4 +1,4 @@
-# LedgerZero Manual Verification (M0–M8)
+# LedgerZero Manual Verification (M0–M9)
 
 This is the human-in-the-loop counterpart to the automated test suite (70+
 tests across `engine/`/`backend/` plus 25 more in `mcp_server/`, all
@@ -6,7 +6,7 @@ passing via `./scripts/check.sh`). Automated tests prove the code does
 what it claims; this walkthrough is
 where you look at the actual running system and judge whether it does what
 *you* want. It also doubles as an early draft of the "scripted demo" M10
-(hardening) calls for.
+(hardening) calls for — now the last milestone before Phase 1 ships.
 
 Everything here is safe to run repeatedly — `scripts/demo_seed.sh` creates a
 fresh demo book every time (a new random id), so nothing you do here can
@@ -83,7 +83,7 @@ on your machine. Look at it:
 
 ```sh
 ls books/                         # one folder, named by book_id
-ls books/<book_id>/               # book.data.enc, book.keystore.json, export/
+ls books/<book_id>/               # book.json, book.data.enc, book.keystore.json
 file books/<book_id>/book.data.enc      # binary data, not JSON/text
 cat books/<book_id>/book.keystore.json  # readable JSON — but no plaintext key,
                                          # only Argon2id params + a wrapped key
@@ -255,6 +255,86 @@ like Part 4/5 verified the hand-built one.
    UNAUTHORIZED_WORKFLOW` — the backend's authorization machinery treats a
    generated artifact identically to a hand-built one.
 
+## Part 8 — Backup and restore (M9)
+
+This is a disaster-recovery drill, not a data-export feature: an operator
+moves a book's files to a folder and back, never seeing a passphrase or
+touching any key, and the owner reopens the restored book with the *exact
+same passphrase as always* — like restoring a `git` checkout somewhere
+else. (Impl Spec §7.3 originally speced this as a reader-passphrase
+*export*; that was corrected — Appendix A, resolution R3 — once it became
+clear v1's actual need is recovery, not sharing a snapshot with someone
+who shouldn't have ongoing access.)
+
+1. With the server running, seed a book (Part 2), or reuse an existing
+   one — note its `book_id`, one account id, and **the passphrase you
+   created it with** (you'll need it again at the end, unchanged).
+2. Check a balance before backup, so you have something to compare:
+   ```sh
+   BOOK_ID=<your book_id>
+   ACCOUNT_ID=<your account_id>
+   COOKIE=$(mktemp)
+   curl -s -c "$COOKIE" -H 'Content-Type: application/json' \
+     -d '{"email":"zhian.job@gmail.com"}' \
+     http://localhost:8080/api/auth/dev-login >/dev/null
+   curl -s -b "$COOKIE" \
+     "http://localhost:8080/api/books/$BOOK_ID/accounts/$ACCOUNT_ID/balance"
+   ```
+3. Back it up to a folder of your choosing — a server-side filesystem
+   path, not a browser download:
+   ```sh
+   LOCATION=/tmp/lz-backup-demo
+   curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d "{\"location\":\"$LOCATION\"}" \
+     "http://localhost:8080/api/books/$BOOK_ID/backup"
+   ls "$LOCATION"   # book.json, book.data.enc, book.keystore.json
+   ```
+   Open `$LOCATION/book.json` — it's plain, readable JSON (`book_id`,
+   `name`, `owner_email`, `entity_id`). `file $LOCATION/book.data.enc`
+   reports `data` — opaque, unreadable without the passphrase, which
+   never appeared anywhere in this step.
+4. Try to restore right now — it should be **refused**, because the book
+   is still open in this server process:
+   ```sh
+   curl -s -w '\nHTTP %{http_code}\n' -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d "{\"location\":\"$LOCATION\"}" \
+     http://localhost:8080/api/books/restore
+   ```
+   Expect `409` / `BOOK_STILL_OPEN`.
+5. Close it, then simulate an actual disaster — delete the book's real
+   folder entirely:
+   ```sh
+   curl -s -b "$COOKIE" -X POST "http://localhost:8080/api/books/$BOOK_ID/close"
+   rm -rf "books/$BOOK_ID"   # from the repo root; the book is now gone
+   ```
+6. Restore it from the backup:
+   ```sh
+   curl -s -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d "{\"location\":\"$LOCATION\"}" \
+     http://localhost:8080/api/books/restore
+   ls "books/$BOOK_ID"   # the three files are back
+   ```
+   Expect the same `book_id`/`name`/`entity_id` back. The restored book is
+   left **closed** — restore never decrypted anything, so nothing could be
+   loaded into memory even if it wanted to.
+7. Open it with a *wrong* passphrase first — expect `401
+   WRONG_PASSPHRASE` — then with **the exact passphrase you created it
+   with in step 1**:
+   ```sh
+   curl -s -w '\nHTTP %{http_code}\n' -b "$COOKIE" -H 'Content-Type: application/json' \
+     -d '{"passphrase":"<your original passphrase>"}' \
+     "http://localhost:8080/api/books/$BOOK_ID/open"
+   ```
+   Nothing about the passphrase ever changed — that's the whole point.
+8. Check the balance from step 2 again — unchanged — then post a new
+   entry through it. It should succeed: a restored book is a live
+   operational starting point, not a read-only snapshot.
+9. `GET /api/books/:id/audit-log` — you will **not** find any kind of
+   "restore" event in it. That's deliberate (resolution R3): restore never
+   decrypts the log, so nothing could append to it even in principle. The
+   fact a restore happened is visible at the filesystem level (the files'
+   mtimes, or your own record of running step 6), not inside the ledger.
+
 ## What you're *not* expected to check here
 
 - Anything in `engine/` or the storage/idempotency internals — that's what
@@ -262,8 +342,7 @@ like Part 4/5 verified the hand-built one.
 - Anything in `mcp_server/` beyond Part 7 above — the 25 Python tests
   (`cd mcp_server && .venv/bin/python -m unittest discover -s tests`)
   cover the generator/artifact/client/tools logic directly.
-- Export/restore (M9) or hardening (M10) — still coming in Phase 1, just
-  not built yet.
+- Hardening (M10) — the last milestone before Phase 1 ships, still coming.
 - Periods/reconciliation-as-workflow (M11) or sub-books/consolidation
   (M12) — deferred to Phase 2 (Impl Spec Appendix A, resolution R2) until
   Phase 1 has been in real use for a while; not because the design is
@@ -275,4 +354,4 @@ like Part 4/5 verified the hand-built one.
 
 That's exactly what this exercise is for — tell me what you saw instead
 and we'll figure out whether it's a bug, a stale doc, or a misunderstanding
-before moving on to M9.
+before moving on to M10.

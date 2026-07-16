@@ -165,6 +165,103 @@ pub async fn open_book(
     }))
 }
 
+/// POST /api/books/:book_id/close — bootstrap-owner-gated (Impl Spec §7.3,
+/// §5.4, Impl Plan M9). Releases the book from this process's in-memory
+/// open-books map; idempotent. Exists so a book can be closed before
+/// restoring over it.
+pub async fn close_book(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = crate::auth::current_user(&state, &headers)?;
+    if let Err(err) = state.authz.authorize(&user, Action::CloseBook) {
+        state.audit.record(
+            "authorization",
+            &user.email,
+            "denied",
+            "close_book requires bootstrap owner",
+        );
+        return Err(err);
+    }
+    state.books.close(book_id).await;
+    Ok(Json(
+        serde_json::json!({ "book_id": book_id, "closed": true }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct BackupBookRequest {
+    pub location: String,
+}
+
+/// POST /api/books/:book_id/backup — bootstrap-owner-gated (Impl Spec
+/// §7.3, Impl Plan M9, resolution R3). Copies the book's already-encrypted
+/// files verbatim to a server-side filesystem `location` — no passphrase
+/// involved, works whether or not the book is currently open.
+pub async fn backup_book(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Path(book_id): Path<Uuid>,
+    Json(body): Json<BackupBookRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = crate::auth::current_user(&state, &headers)?;
+    if let Err(err) = state.authz.authorize(&user, Action::BackupBook) {
+        state.audit.record(
+            "authorization",
+            &user.email,
+            "denied",
+            "backup_book requires bootstrap owner",
+        );
+        return Err(err);
+    }
+    state
+        .books
+        .backup(book_id, std::path::Path::new(&body.location))
+        .await?;
+    Ok(Json(
+        serde_json::json!({ "book_id": book_id, "location": body.location }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct RestoreBookRequest {
+    pub location: String,
+}
+
+/// POST /api/books/restore — bootstrap-owner-gated (Impl Spec §7.3, Impl
+/// Plan M9, resolution R3). The target book_id comes from `location`'s own
+/// `book.json`, never a caller-supplied one. Refuses if that book is
+/// currently open in this process (`close_book` first); otherwise
+/// wipe-and-replace, whether or not a book already exists on disk at that
+/// id. No passphrase is involved — the restored book is left closed;
+/// `open_book` afterward uses the same passphrase as always.
+pub async fn restore_book(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(body): Json<RestoreBookRequest>,
+) -> Result<Json<BookResponse>, ApiError> {
+    let user = crate::auth::current_user(&state, &headers)?;
+    if let Err(err) = state.authz.authorize(&user, Action::RestoreBook) {
+        state.audit.record(
+            "authorization",
+            &user.email,
+            "denied",
+            "restore_book requires bootstrap owner",
+        );
+        return Err(err);
+    }
+    let meta = state
+        .books
+        .restore(std::path::Path::new(&body.location))
+        .await?;
+    Ok(Json(BookResponse {
+        book_id: meta.book_id,
+        name: meta.name,
+        entity_id: meta.entity_id,
+    }))
+}
+
 /// GET /api/books — every book folder on disk, open or not.
 pub async fn list_books(
     State(state): State<SharedState>,
@@ -649,21 +746,66 @@ pub async fn deploy_workflow(
 
 /// GET /api/books/:book_id/workflows — every deployed workflow in the
 /// entity (admin view; owner-gated).
+/// A `WorkflowDefinition` plus whether its dev artifact is actually present
+/// and unmodified on disk right now (Impl Spec §7.3/§7.4, Impl Plan M9): a
+/// restored book's ledger doesn't carry its dev artifacts along (they're
+/// not part of a backup, §7.3), so a restored deployment whose artifact
+/// hasn't also been restored or redeployed must be discoverable-but-marked-
+/// unavailable rather than silently offered as runnable. Computed fresh on
+/// every read, not stored — an artifact that reappears (restored/
+/// redeployed later) becomes available again automatically, with nothing
+/// to reverse.
+#[derive(Serialize)]
+pub struct WorkflowSummary {
+    #[serde(flatten)]
+    pub definition: WorkflowDefinition,
+    pub artifact_available: bool,
+}
+
+/// Re-hashes the deployment's dev artifact from disk and compares against
+/// the hashes recorded at deploy time — the same identity check
+/// `deploy_workflow` itself relies on (Impl Spec §7.4), reused here rather
+/// than reimplemented.
+async fn artifact_available(dev_artifacts_dir: &str, definition: &WorkflowDefinition) -> bool {
+    let dir =
+        crate::dev_artifacts::workflow_dir(dev_artifacts_dir, definition.workflow_deployment_id);
+    match crate::dev_artifacts::hash_artifact(&dir).await {
+        Ok(hashed) => {
+            hashed.manifest_hash == definition.manifest_hash
+                && hashed.code_hash == definition.code_hash
+        }
+        Err(_) => false,
+    }
+}
+
+async fn summarize_workflows(
+    dev_artifacts_dir: &str,
+    definitions: Vec<&WorkflowDefinition>,
+) -> Vec<WorkflowSummary> {
+    let mut out = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        out.push(WorkflowSummary {
+            artifact_available: artifact_available(dev_artifacts_dir, definition).await,
+            definition: definition.clone(),
+        });
+    }
+    out
+}
+
 pub async fn list_workflows(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Query(filter): Query<EntityFilter>,
-) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
+) -> Result<Json<Vec<WorkflowSummary>>, ApiError> {
     let (_, open_book) = book_context(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
-    Ok(Json(
-        engine
-            .list_workflows(filter.entity_id)
-            .into_iter()
-            .cloned()
-            .collect(),
-    ))
+    let summaries = summarize_workflows(
+        &state.config.dev_artifacts_dir,
+        engine.list_workflows(filter.entity_id),
+    )
+    .await;
+    Ok(Json(summaries))
 }
 
 /// GET /api/books/:book_id/workflows/mine — the launcher's workflow menu
@@ -675,16 +817,15 @@ pub async fn my_workflows(
     headers: HeaderMap,
     Path(book_id): Path<Uuid>,
     Query(filter): Query<EntityFilter>,
-) -> Result<Json<Vec<WorkflowDefinition>>, ApiError> {
+) -> Result<Json<Vec<WorkflowSummary>>, ApiError> {
     let (user, open_book) = open_book_for_any_user(&state, &headers, book_id).await?;
     let engine = open_book.engine.read().await;
-    Ok(Json(
-        engine
-            .workflows_authorized_for_user(user.user_id, filter.entity_id)
-            .into_iter()
-            .cloned()
-            .collect(),
-    ))
+    let summaries = summarize_workflows(
+        &state.config.dev_artifacts_dir,
+        engine.workflows_authorized_for_user(user.user_id, filter.entity_id),
+    )
+    .await;
+    Ok(Json(summaries))
 }
 
 #[derive(Deserialize)]

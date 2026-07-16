@@ -106,6 +106,12 @@ export default function App() {
 
   const selectedBook = (books || []).find((b) => b.book_id === selectedBookId);
 
+  // Impl Plan M9: a restored book's ledger can outlive its dev artifacts —
+  // don't offer a link that can only 404 or serve stale code.
+  const availableWorkflows = (myWorkflows || []).filter(
+    (w) => w.artifact_available !== false
+  );
+
   useEffect(() => {
     setMyWorkflows(null);
     if (!selectedBookId || !books) return;
@@ -213,14 +219,14 @@ export default function App() {
         </label>
       )}
       {pickerError && <p style={{ color: "#a00" }}>{pickerError}</p>}
-      {myWorkflows && myWorkflows.length === 0 && (
+      {myWorkflows && availableWorkflows.length === 0 && (
         <p style={{ color: "#666" }}>
           No workflows in this book are assigned to you.
         </p>
       )}
-      {myWorkflows && myWorkflows.length > 0 && selectedBook && (
+      {myWorkflows && availableWorkflows.length > 0 && selectedBook && (
         <ul>
-          {myWorkflows.map((w) => (
+          {availableWorkflows.map((w) => (
             <li key={w.workflow_deployment_id}>
               <a
                 href={`${w.frontend_route}?book_id=${selectedBook.book_id}&entity_id=${selectedBook.entity_id}`}

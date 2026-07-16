@@ -228,3 +228,4 @@ server.config.toml
 # Local runtime data
 books/
 ops_audit.jsonl
+.DS_Store

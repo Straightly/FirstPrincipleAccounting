@@ -10,7 +10,9 @@
 
 use crate::error::ApiError;
 use axum::http::StatusCode;
-use ledgerzero_engine::storage::{BookStorage, FileBookStore, PassphraseKeyProvider, StorageError};
+use ledgerzero_engine::storage::{
+    BookStorage, FileBookStore, PassphraseKeyProvider, StorageError, DATA_FILE, KEYSTORE_FILE,
+};
 use ledgerzero_engine::types::SystemClock;
 use ledgerzero_engine::{AccountingEngine, EngineError, EngineState};
 use serde::{Deserialize, Serialize};
@@ -224,6 +226,85 @@ impl BooksRegistry {
     /// opened it.
     pub async fn list_open(&self) -> Vec<Arc<OpenBook>> {
         self.open.read().await.values().cloned().collect()
+    }
+
+    /// Bootstrap-owner-gated (Impl Spec §7.3, Impl Plan M9, resolution R3):
+    /// copies a book's three portable files — `book.json`, `book.data.enc`,
+    /// `book.keystore.json` — to `location` verbatim. No decryption, so
+    /// this needs neither an open book nor any passphrase, and works
+    /// whether or not the book is currently open. Safe against a book
+    /// being actively mutated concurrently: `book.data.enc` is only ever
+    /// replaced via atomic rename (engine `storage.rs`), so a read from
+    /// outside any lock always sees a complete file, never a torn one.
+    pub async fn backup(&self, book_id: Uuid, location: &Path) -> Result<(), ApiError> {
+        let source = self.book_dir(book_id);
+        read_meta(&source).await?; // confirms the book actually exists
+        tokio::fs::create_dir_all(location)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        for name in [META_FILE, DATA_FILE, KEYSTORE_FILE] {
+            tokio::fs::copy(source.join(name), location.join(name))
+                .await
+                .map_err(|e| ApiError::internal(format!("failed to copy {name}: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Bootstrap-owner-gated (Impl Plan M9): releases `book_id` from the
+    /// in-memory open-books map. Idempotent — a no-op if it isn't open.
+    /// Exists specifically so `restore` (below) has a way to act on a book
+    /// this process currently holds open.
+    pub async fn close(&self, book_id: Uuid) {
+        self.open.write().await.remove(&book_id);
+    }
+
+    /// Bootstrap-owner-gated (Impl Spec §7.3, Impl Plan M9, resolution R3):
+    /// wipe-and-replace restore from `location`. `book_id` comes from
+    /// `location`'s own plaintext `book.json` — never a caller-supplied
+    /// one, so restore always preserves the logical book_id. Refuses if
+    /// that book_id is currently open in this process (`close` first);
+    /// otherwise allowed whether or not a book already exists on disk at
+    /// that id — a damaged location being intentionally replaced is the
+    /// point. Never decrypts anything, so the restored book is left
+    /// closed: the owner calls `open` afterward with the same passphrase
+    /// as always, unchanged by any of this.
+    pub async fn restore(&self, location: &Path) -> Result<BookMeta, ApiError> {
+        let meta = read_meta(location).await.map_err(|_| {
+            ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "INVALID_INPUT",
+                "location does not contain a book.json — not a valid backup",
+            )
+        })?;
+        if self.open.read().await.contains_key(&meta.book_id) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "BOOK_STILL_OPEN",
+                "book is currently open in this process; close it before restoring over it",
+            ));
+        }
+        for name in [DATA_FILE, KEYSTORE_FILE] {
+            if !tokio::fs::try_exists(location.join(name))
+                .await
+                .unwrap_or(false)
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "INVALID_INPUT",
+                    format!("location is missing {name} — not a complete backup"),
+                ));
+            }
+        }
+        let target = self.book_dir(meta.book_id);
+        tokio::fs::create_dir_all(&target)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        for name in [META_FILE, DATA_FILE, KEYSTORE_FILE] {
+            tokio::fs::copy(location.join(name), target.join(name))
+                .await
+                .map_err(|e| ApiError::internal(format!("failed to copy {name}: {e}")))?;
+        }
+        Ok(meta)
     }
 }
 

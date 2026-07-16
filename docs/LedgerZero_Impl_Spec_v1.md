@@ -4,7 +4,7 @@ This is the implementation baseline for the first build. It supersedes `LedgerZe
 
 ## Delivery phases (resolution R2 — Appendix A)
 
-Everything in this document is the full v1 design; not all of it ships before the user starts running real books. **Phase 1** is the release the user operates as its first real user — single-book accounting core, hand-built and AI-generated workflows, export/restore, hardening/deployment (Impl Plan M1–M10, renumbered to be contiguous when this split landed). **Phase 2** — deferred until Phase 1 is in real use, not removed from scope — is periods-in-practice-as-a-workflow and reconciliation (Impl Plan M11) and sub-books/consolidation (Impl Plan M12). Nothing in Phase 1 depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8, reachable directly without a dedicated browser workflow; export/restore and hardening operate on one book regardless of whether sub-books ever exist. Sections describing Phase 2 features are marked inline; see the Impl Plan for the full milestone content, relocated there under "Phase 2."
+Everything in this document is the full v1 design; not all of it ships before the user starts running real books. **Phase 1** is the release the user operates as its first real user — single-book accounting core, hand-built and AI-generated workflows, backup/restore, hardening/deployment (Impl Plan M1–M10, renumbered to be contiguous when this split landed). **Phase 2** — deferred until Phase 1 is in real use, not removed from scope — is periods-in-practice-as-a-workflow and reconciliation (Impl Plan M11) and sub-books/consolidation (Impl Plan M12). Nothing in Phase 1 depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8, reachable directly without a dedicated browser workflow; backup/restore and hardening operate on one book regardless of whether sub-books ever exist. Sections describing Phase 2 features are marked inline; see the Impl Plan for the full milestone content, relocated there under "Phase 2."
 
 ## 1 Vision & Axioms
 
@@ -150,7 +150,7 @@ Rules: periods must not overlap within an entity; `entry_date` must fall inside 
 
 **Sub-book creation and consolidation are Phase 2 (Impl Plan M12, deferred — see "Delivery phases" above); the one-entity-per-book boundary below is Phase 1.**
 
-Unchanged in structure from the original spec (book_id, optional parent_book_id, one storage folder, one owner at bootstrap, ownership transfer re-encrypts). **Amended (Impl Plan M7, resolution R1):** the book is the storage, export, restore, bootstrap security, *and* accounting boundary — the two now coincide. Every book has exactly one entity, auto-created when the book is created (2.9); there is no API to create a second one. A book's encryption key, owner, and authority are all scoped to that one legal/accounting entity, so a key compromise or an owner's authority never spans more than one entity's books.
+Unchanged in structure from the original spec (book_id, optional parent_book_id, one storage folder, one owner at bootstrap, ownership transfer re-encrypts). **Amended (Impl Plan M7, resolution R1):** the book is the storage, backup, restore, bootstrap security, *and* accounting boundary — the two now coincide. Every book has exactly one entity, auto-created when the book is created (2.9); there is no API to create a second one. A book's encryption key, owner, and authority are all scoped to that one legal/accounting entity, so a key compromise or an owner's authority never spans more than one entity's books.
 
 Related legal entities — a holding company's subsidiaries, or one bookkeeper's several clients — are *not* modeled as multiple entities inside one book. Each gets its own book (its own key, its own owner, its own storage folder), linked to a parent via `create_sub_book` and combined only through read-only, rule-based, idempotent consolidation (below) — never by sharing a key or a file. This was already the sub-book mechanism's job; removing multi-entity-per-book doesn't remove any capability, it removes a second, weaker path to the same outcome that bypassed the book's own security boundary.
 
@@ -197,9 +197,9 @@ Book folder layout:
 
 ```text
 <book_name>/
+  book.json
   book.data.enc
   book.keystore.json
-  export/
 ```
 
 ### 3.2 Storage interface
@@ -240,7 +240,7 @@ Unchanged: **realtime** (ACID posting across affected accounts, for e.g. physica
 
 ### 4.3 Balance computation
 
-Authoritative balances are always computable by summing journal lines from the event log. Materialized snapshots are read caches only. Snapshot/export cuts use the writer lock plus a ledger marker as in the original spec.
+Authoritative balances are always computable by summing journal lines from the event log. Materialized snapshots are read caches only. **Amended (Impl Plan M9, resolution R3):** a book-file backup needs neither a writer lock nor a ledger marker — `book.data.enc` is only ever replaced via atomic rename (§3.1), so a backup reading it from outside any lock always sees a complete pre- or post-mutation file, never a torn one (§7.3).
 
 ### 4.4 Error model
 
@@ -283,7 +283,7 @@ A plaintext server configuration file (e.g. `server.config.toml`) lives **outsid
 - `Open book` (owner-only): owner submits the passphrase; backend derives the wrapping key, unwraps the book key into process memory, loads and decrypts the book. Key stays in memory for the process; restart requires `Open book` again.
 - `BookKeyProvider` contract retained — later providers (OS keystore, KMS, HSM) swap in without changing engine or format.
 - No key transfer between users; ownership transfer re-encrypts under the new owner's passphrase (see 3.3 for the git-history caveat).
-- Exports are encrypted for the intended reader: the export workflow takes a reader passphrase (same Argon2id + AES-256-GCM construction) supplied out-of-band to the reader. Frontend, generated code, and MCP never receive raw keys.
+- **Amended (Impl Plan M9, resolution R3):** `backup_book`/`restore_book` (§7.3) never touch a passphrase at all — they move `book.data.enc`/`book.keystore.json` verbatim between folders. No new key is derived, no existing key is unwrapped; the backend doesn't decrypt anything to perform a backup or a restore. The owner's passphrase after a restore is the exact same one as before it — continuity comes from `Open book` afterward, unchanged. Frontend, generated code, and MCP never receive raw keys.
 
 ### 5.5 Runtime security
 
@@ -301,7 +301,7 @@ Unchanged from the original spec §7.2: generation flows user → MCP → Python
 
 ### 6.3 Reporting
 
-**There are no built-in reports in v1.** All reporting is built as workflows over the read APIs (`get_balance`, `list_entries`, `get_audit_log`). Dedicated reporting tools are an open question deferred until real reporting workflows expose the need. The engine's always-balanced construction is what makes "reconciled before export" a no-op (8.2).
+**There are no built-in reports in v1.** All reporting is built as workflows over the read APIs (`get_balance`, `list_entries`, `get_audit_log`). Dedicated reporting tools are an open question deferred until real reporting workflows expose the need. The engine's always-balanced construction is what makes "reconciled before backup" a no-op (7.3).
 
 ### 6.4 MCP primitives (v1)
 
@@ -311,7 +311,7 @@ Unchanged from the original spec §7.2: generation flows user → MCP → Python
 
 Authentication/authorization endpoints, plus:
 
-- Books: `open_book`, `create_accounting_book` (also creates the book's one entity, §2.9), `export_book`, `restore_book`; `create_sub_book`/`list_sub_books` are Phase 2 (Impl Plan M12, deferred)
+- Books: `open_book`, `close_book`, `create_accounting_book` (also creates the book's one entity, §2.9), `backup_book`, `restore_book`; `create_sub_book`/`list_sub_books` are Phase 2 (Impl Plan M12, deferred)
 - Discovery: `list_my_books` — the launcher's book picker (§7.1). The owner sees every book (as `list_books` already allows); any other signed-in user sees only books where they hold at least one workflow-granting role — never a raw enumeration they'd have to already know the id to request. Each result carries its `entity_id` directly (one per book, §2.8), so no separate entity-discovery call exists or is needed.
 - Reference: `create_resource_type`, `create_chart`, `copy_chart`, `create_account`, `update_account_metadata`, `deactivate_account`, `list_accounts`, `list_entities` (inspection only — always returns the book's one entity)
 - Ledger: `post_entry`, `reverse_entry`, `get_balance`, `list_entries`, `get_audit_log`, `record_price`, `list_prices`
@@ -358,9 +358,19 @@ FirstPrincipleAccounting/
   server.config.example.toml
 ```
 
-### 7.3 Export and restore
+### 7.3 Backup and restore
 
-As in the original spec §8.2, with v1 clarifications already decided there: encrypted JSON bundle with deployment references/hashes but not artifact bodies; restore is wipe-and-replace preserving internal IDs and `book_id`; workflows whose artifacts can't be matched by id+hash are marked unavailable until restored/redeployed; restored books are live operational starting points; "reconciled before export" is a no-op because the engine never accepts an unbalanced state.
+**Amended (Impl Plan M9, resolution R3):** the original spec §8.2 framed this as an *export*, re-encrypted for a reader passphrase independent of the book's own key — appropriate for handing a snapshot to someone who shouldn't have ongoing operational access, but not what v1 actually needs. v1's real requirement is disaster recovery: the operator moving a book's files to or from a folder never sees plaintext and never touches any passphrase, and the owner's *original* passphrase keeps working, unchanged, wherever the files land — the same trust model as `git`, where checking a repository out somewhere else never requires re-authenticating to its content.
+
+`backup_book` and `restore_book` operate on the book's already-encrypted files verbatim — no decryption, no re-encryption, no new passphrase enters at any point:
+
+- A book folder is exactly three files that matter for portability: `book.json` (plaintext metadata — `book_id`, `name`, `owner_email`, `entity_id`; the latter carried here since Impl Plan M7, so this is already everything `BookMeta` needs), `book.data.enc`, and `book.keystore.json`. The local git backup repository (§3.3) and the transient `book.lock` are not part of a backup.
+- `backup_book(book_id, location)`: copies those three files from the book's folder to `location`, a server-side filesystem path the caller supplies (a "location selector," not an HTTP upload/download). Works whether or not the book is currently open — it's pure file I/O, needing neither the engine nor any key. Safe to run against a book being actively mutated: `book.data.enc` is only ever replaced via atomic rename (§3.1), so a reader outside any lock either sees the complete pre-mutation file or the complete post-mutation one, never a torn mix — no additional locking is needed for backup's own consistency.
+- `restore_book(location)`: copies those three files from `location` into `books_dir/<book_id>/`, where `book_id` comes from `location`'s own `book.json` — never a caller-supplied id, matching "restore preserves the logical book_id." Wipe-and-replace: allowed whether or not a book already exists on disk at that id (a damaged location being intentionally replaced is the point), but refused with a structured error if that `book_id` is *currently open in this server process* — `close_book` (below) exists specifically so the owner can release it first. Restore leaves the book closed; nothing about it is decrypted, so nothing could be loaded into memory even if the caller wanted that. Continuity is the owner's `open_book` call afterward, with the same passphrase they always used — untouched by any of this.
+- No ledger event marks a restore. Unlike an ordinary mutation, restore never decrypts the log, so nothing could append to it even in principle; the operational fact "this book was restored" is visible at the filesystem/git level (mtimes, the destination's own git history picking up from wherever the backup was taken), the same place you'd look after a `git` checkout elsewhere. This is a deliberate simplification versus the original design's audit-trail instinct, not an oversight — see Appendix A, R3.
+- `close_book`: releases a book from the running process's in-memory open-books map (Impl Spec §5.4's "the key remains in memory for that backend process" — this is how you make it *not* remain). Bootstrap-owner-gated like `create_accounting_book`/`open_book`, since it (like restore) may need to act on a book that isn't necessarily already open — idempotent, a no-op if the book isn't open.
+- Workflow deployment artifacts are deliberately not part of a backup (unchanged from the original spec's framing: "not the generated workflow artifact bodies") — a restored book's `WorkflowDefinition` entries are unaffected, but the dev artifacts they reference may not have moved with the backup. `list_workflows`/`my_workflows` mark this per-deployment as it's discovered (`artifact_available`, computed fresh on every read by re-hashing the dev artifact against the deployment's recorded hashes, Impl Spec §7.4) rather than gating restore itself on it — restore is unconditional at the ledger level, exactly as the original spec's "the book may be restored" language already intended.
+- "Reconciled before export" from the original spec is moot under this design — there is no export in the reader-passphrase sense v1 ships; a book's own always-balanced invariant (Axiom 2) already guarantees a backup can never capture an unbalanced state, since the files being copied are whatever the engine already wrote.
 
 ### 7.4 Dev-time artifact store
 
@@ -399,10 +409,10 @@ Gap references are to `LedgerZero_Spec_Gap_Analysis.md`.
 | B5 chart entity | Chart table defined; one active chart per entity; copy = new IDs with source metadata (2.2) |
 | B6 period schema/APIs | Full schema; non-overlap rule; close/reopen APIs as PERIOD_STATUS events (2.7, 6.5) |
 | B7 equation & close | Expanded equation A = L + E + (R − X); year-end close deferred (1) |
-| B8 key mechanics | Passphrase → Argon2id → AES-256-GCM wrapped book key; export same construction (5.4) |
+| B8 key mechanics | Passphrase → Argon2id → AES-256-GCM wrapped book key; backup/restore never derive or touch a key at all (5.4) |
 | B9 bootstrap | Plaintext server config outside books with OAuth config + `bootstrap_owner_email` (5.3) |
 | B10 reporting | **No built-in reports**; all reports are workflows over read APIs; tools TBD (6.3) |
-| B11 API deltas | reverse_entry, deactivate_account, update_account_metadata, get_audit_log, close/reopen_period, assign_workflow_to_role, record_price/list_prices, export/restore added (6.5) |
+| B11 API deltas | reverse_entry, deactivate_account, update_account_metadata, get_audit_log, close/reopen_period, assign_workflow_to_role, record_price/list_prices, backup/restore/close_book added (6.5) |
 | B12 idempotency conflict | Same ID + different payload → IDEMPOTENCY_CONFLICT (4.1) |
 | B13 stack & repo | Rust end-to-end (Axum, engine in-process); each workflow a self-contained React app with a minimal launcher, no shared frontend dependencies; Python keeps MCP/dev-time only, engine/ and storage/ removed from mcp_server; workspace layout fixed (7.1, 7.2) |
 | B14 error model | Structured error catalog (4.4) |
@@ -414,4 +424,5 @@ Post-implementation resolutions (found after M0–M8 were built, not in the orig
 | # | Resolution |
 |----|----|
 | R1 | Multi-entity-per-book removed (Impl Plan M7): a book's encryption key and owner authority previously could span several legally distinct entities, which is a real security-boundary crossing, not just an implementation convenience — a key compromise or an owner's blanket authority reached every entity sharing the book. Every book now has exactly one entity, auto-created with `create_accounting_book`; `create_entity` is retired as a client-facing operation. Related legal entities (holding company/subsidiaries, one bookkeeper's several clients) already had a correct mechanism — separate books linked via `create_sub_book` and combined only through read-only, idempotent consolidation — so this removes a second, weaker path to the same outcome, not a capability (2.8, 2.9, 6.5, 6.6, 7.1). Also simplified the M6 launcher picker to a single book-selection step, since selecting a book now already determines its one entity.|
-| R2 | Delivery split into two phases after M8 shipped (raised by the user): Phase 1 (Impl Plan M1–M10) is what the user starts running real books on; Phase 2 (Impl Plan M11 — periods-in-practice/reconciliation-as-workflow, and M12 — sub-books/consolidation) is deferred until Phase 1 is in real use, not dropped from scope. Verified no Phase 1 milestone depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8 (reachable directly, without a dedicated browser workflow); export/restore and hardening both operate on one book regardless of whether sub-books ever exist. The originally-numbered M9 (periods/reconciliation) and M11 (sub-books/consolidation) — the two deferred to Phase 2 — were renumbered to M11 and M12; the originally-numbered M10 (export/restore) and M12 (hardening) — both still Phase 1 — moved up to M9 and M10, so Phase 1 reads as a clean, contiguous M1–M10. Every cross-reference elsewhere (this document, `mcp_server/`, `docs/LedgerZero_Manual_Verification.md`) was swept to match (2.8, 6.4, 6.5, 6.6, and the "Delivery phases" note above §1).|
+| R2 | Delivery split into two phases after M8 shipped (raised by the user): Phase 1 (Impl Plan M1–M10) is what the user starts running real books on; Phase 2 (Impl Plan M11 — periods-in-practice/reconciliation-as-workflow, and M12 — sub-books/consolidation) is deferred until Phase 1 is in real use, not dropped from scope. Verified no Phase 1 milestone depends on Phase 2: period close/reopen and closed-period rejection are already engine/backend/MCP-level capabilities since M2/M4/M8 (reachable directly, without a dedicated browser workflow); backup/restore and hardening both operate on one book regardless of whether sub-books ever exist. The originally-numbered M9 (periods/reconciliation) and M11 (sub-books/consolidation) — the two deferred to Phase 2 — were renumbered to M11 and M12; the originally-numbered M10 (export/restore) and M12 (hardening) — both still Phase 1 — moved up to M9 and M10, so Phase 1 reads as a clean, contiguous M1–M10. Every cross-reference elsewhere (this document, `mcp_server/`, `docs/LedgerZero_Manual_Verification.md`) was swept to match (2.8, 6.4, 6.5, 6.6, and the "Delivery phases" note above §1).|
+| R3 | M9's export/restore redesigned as backup/restore after the user caught the original design solving the wrong problem (raised while reviewing the first M9 implementation): the original spec §8.2 and this document's first pass at M9 both framed it as an *export* — re-encrypted for a reader passphrase independent of the book's own key, appropriate for handing a snapshot to a reader who shouldn't get ongoing operational access. That's not what v1 needs; the actual requirement is disaster recovery, where the operator moving files around never sees plaintext or touches any passphrase, and the owner's original passphrase keeps working unchanged wherever the files land — the same trust model as `git`. Corrected: `backup_book(book_id, location)`/`restore_book(location)` move `book.json`/`book.data.enc`/`book.keystore.json` verbatim between a book's folder and an operator-chosen filesystem location, with no decryption, no re-encryption, and no passphrase touched anywhere in the flow (3.1, 5.4, 7.3). Both, plus a new `close_book`, are bootstrap-owner-gated like `create_accounting_book`/`open_book` rather than requiring the book already open, since backup/restore may need to act on a book that isn't open (or doesn't yet exist at its target location) — `close_book` exists specifically so the owner can release a book from the running process's memory before restoring over it, and `restore_book` refuses if its target `book_id` is currently open in this process. The `RESTORE` ledger-event marker from the first M9 pass is dropped entirely, by explicit user direction — restore never decrypts the log under the corrected design, so nothing could append to it even in principle; the fact a restore happened is visible at the filesystem/git level, not inside the ledger. Unavailable-workflow marking (2.9, 7.4) is unaffected by this correction and is kept as originally built — it depends only on whether a deployment's dev artifact is present and hash-matched on disk, which is equally true regardless of how the book's own files got there.|

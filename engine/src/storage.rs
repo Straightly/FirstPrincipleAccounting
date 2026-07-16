@@ -23,8 +23,11 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-const DATA_FILE: &str = "book.data.enc";
-const KEYSTORE_FILE: &str = "book.keystore.json";
+/// Public (Impl Plan M9): `backend/src/books.rs` copies these two files
+/// verbatim for backup/restore, without decrypting them — the filenames
+/// are the only thing it needs from this module for that.
+pub const DATA_FILE: &str = "book.data.enc";
+pub const KEYSTORE_FILE: &str = "book.keystore.json";
 const LOCK_FILE: &str = "book.lock";
 const TMP_SUFFIX: &str = ".tmp";
 const BOOK_KEY_LEN: usize = 32;
@@ -474,6 +477,11 @@ impl BookStorage for FileBookStore {
             let ids: Vec<String> = new_event_ids.iter().map(Uuid::to_string).collect();
             format!("mutation batch: {}", ids.join(", "))
         };
+        // A restored book folder (Impl Plan M9) has no `.git` of its own — it's
+        // recreated from just the three portable files. Without this, `git -C`
+        // would walk up and commit into whatever parent repo happens to enclose
+        // `books/`. Idempotent: no-ops if `.git` already exists.
+        git_init(&self.dir).await?;
         git_commit(&self.dir, &message).await?;
         Ok(())
     }
